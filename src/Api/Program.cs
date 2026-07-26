@@ -4,6 +4,7 @@ using System.Threading.RateLimiting;
 using Api.Assistant;
 using Api.Domain;
 using Api.Features.Auth;
+using Api.Features.Config;
 using Api.Features.Customers;
 using Api.Features.Invoices;
 using Api.Features.Reports;
@@ -102,7 +103,8 @@ app.UseRateLimiter();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
-app.MapAuthEndpoints()
+app.MapConfigEndpoints()
+    .MapAuthEndpoints()
     .MapCustomerEndpoints()
     .MapInvoiceEndpoints()
     .MapReportEndpoints()

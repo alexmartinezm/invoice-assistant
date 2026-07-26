@@ -1,4 +1,5 @@
 using Api.Domain;
+using Api.Features.Invoices;
 using Microsoft.EntityFrameworkCore;
 
 namespace Api.Infrastructure;
@@ -12,14 +13,14 @@ public static class DatabaseSeeder
     /// <summary>Shared password for the three demo users. This is a public demo repo by design.</summary>
     public const string DemoPassword = "demo1234";
 
-    private const decimal StandardVatRate = 0.21m;
-    private const decimal ReducedVatRate = 0.10m;
-    private const int PaymentTermDays = 30;
-
-    public static async Task SeedAsync(AppDbContext db, IClock clock, CancellationToken cancellationToken = default)
+    public static async Task SeedAsync(
+        AppDbContext db,
+        IClock clock,
+        InvoicingOptions invoicing,
+        CancellationToken cancellationToken = default)
     {
         await SeedUsersAsync(db, cancellationToken);
-        await SeedInvoicingDataAsync(db, clock, cancellationToken);
+        await SeedInvoicingDataAsync(db, clock, invoicing, cancellationToken);
     }
 
     private static async Task SeedUsersAsync(AppDbContext db, CancellationToken cancellationToken)
@@ -39,7 +40,11 @@ public static class DatabaseSeeder
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private static async Task SeedInvoicingDataAsync(AppDbContext db, IClock clock, CancellationToken cancellationToken)
+    private static async Task SeedInvoicingDataAsync(
+        AppDbContext db,
+        IClock clock,
+        InvoicingOptions invoicing,
+        CancellationToken cancellationToken)
     {
         if (await db.Customers.AnyAsync(cancellationToken))
         {
@@ -58,12 +63,13 @@ public static class DatabaseSeeder
         foreach (var profile in BuildProfiles().OrderBy(p => p.DueOffsetDays))
         {
             var dueDate = today.AddDays(profile.DueOffsetDays);
-            var issueDate = dueDate.AddDays(-PaymentTermDays);
+            var issueDate = dueDate.AddDays(-invoicing.DefaultPaymentTermDays);
             var sequence = sequenceByYear.GetValueOrDefault(issueDate.Year) + 1;
             sequenceByYear[issueDate.Year] = sequence;
 
             var customer = customers[random.Next(customers.Length)];
-            var vatRate = random.Next(5) == 0 ? ReducedVatRate : StandardVatRate;
+            // Mostly the standard rate, with the reduced one sprinkled in so the ledger is not uniform.
+            var vatRate = random.Next(5) == 0 ? invoicing.ReducedVatRate : invoicing.DefaultVatRate;
 
             var invoice = Invoice.CreateDraft(
                 Invoice.FormatNumber(issueDate.Year, sequence),

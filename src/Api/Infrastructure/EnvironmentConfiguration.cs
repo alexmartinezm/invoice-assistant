@@ -18,6 +18,14 @@ public static class EnvironmentConfiguration
         ("CHAT_MODEL", "AI:ChatModel"),
         ("JWT_SIGNING_KEY", "Jwt:SigningKey"),
         ("ASSISTANT_API_BASE_URL", "Assistant:ApiBaseUrl"),
+        ("INVOICING_CURRENCY", "Invoicing:Currency"),
+        ("INVOICING_CURRENCY_SYMBOL", "Invoicing:CurrencySymbol"),
+        ("INVOICING_LOCALE", "Invoicing:Locale"),
+        ("INVOICING_TAX_LABEL", "Invoicing:TaxLabel"),
+        ("INVOICING_DEFAULT_VAT_RATE", "Invoicing:DefaultVatRate"),
+        ("INVOICING_REDUCED_VAT_RATE", "Invoicing:ReducedVatRate"),
+        ("INVOICING_PAYMENT_TERM_DAYS", "Invoicing:DefaultPaymentTermDays"),
+        ("INVOICING_ACCOUNTANT_MARK_PAID_LIMIT", "Invoicing:AccountantMarkPaidLimit"),
     ];
 
     /// <summary>

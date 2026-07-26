@@ -91,8 +91,9 @@ All commands, including the quality gates, live in [`.agent/commands.md`](.agent
 
 Until F2 lands the assistant is read-only: the tool catalog contains four read tools and nothing
 else, which is also why the Viewer and the Admin see the same figures today. The roles already
-differ at the API — a Viewer is refused every write, an Accountant is capped at €1,000 — and that
-difference becomes visible in the chat as soon as write tools exist.
+differ at the API — a Viewer is refused every write, an Accountant is capped at a configurable
+ceiling (€1,000 by default) — and that difference becomes visible in the chat as soon as write
+tools exist.
 
 **Out of scope for v1:** RAG, cross-session memory, multi-agent, real multi-tenancy, real legal invoicing (Verifactu, etc.), i18n. The invoicing app is a credible pretext, not a product.
 

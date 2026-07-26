@@ -19,7 +19,7 @@ namespace Api.Tests.Support;
 /// the model scripted. Everything else — auth, EF, endpoints, the tools' HTTP hop — is the code
 /// that ships.
 /// </summary>
-public sealed class ApiFactory : WebApplicationFactory<Program>
+public class ApiFactory : WebApplicationFactory<Program>
 {
     private const string DemoPassword = DatabaseSeeder.DemoPassword;
 
@@ -64,20 +64,33 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         return login!.AccessToken;
     }
 
+    /// <summary>
+    /// Settings a derived factory wants on top of the defaults — used to boot the app under a
+    /// different market so the configurability is proved rather than assumed.
+    /// </summary>
+    protected virtual IReadOnlyDictionary<string, string?> ExtraConfiguration =>
+        new Dictionary<string, string?>();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
 
-        builder.ConfigureAppConfiguration(configuration => configuration.AddInMemoryCollection(
-            new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:Postgres"] = _testConnectionString,
-                ["Jwt:SigningKey"] = "integration-tests-signing-key-long-enough-for-hmac-sha256",
-                // No provider configured: the scripted client below stands in for one.
-                ["AI:Provider"] = "azure-openai",
-                ["AI:AzureEndpoint"] = string.Empty,
-                ["OTEL_CONSOLE_EXPORTER"] = "false",
-            }));
+        var settings = new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:Postgres"] = _testConnectionString,
+            ["Jwt:SigningKey"] = "integration-tests-signing-key-long-enough-for-hmac-sha256",
+            // No provider configured: the scripted client below stands in for one.
+            ["AI:Provider"] = "azure-openai",
+            ["AI:AzureEndpoint"] = string.Empty,
+            ["OTEL_CONSOLE_EXPORTER"] = "false",
+        };
+
+        foreach (var (key, value) in ExtraConfiguration)
+        {
+            settings[key] = value;
+        }
+
+        builder.ConfigureAppConfiguration(configuration => configuration.AddInMemoryCollection(settings));
 
         builder.ConfigureLogging(logging => logging.AddProvider(Logs));
 

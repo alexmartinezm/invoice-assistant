@@ -119,9 +119,11 @@ These look like styling choices and are not. Getting them wrong makes the UI say
 - **The server computed it; show it, do not recompute it.** `daysOverdue`, bucket totals and VAT all
   arrive from the API. Grouping already-computed values in the browser is fine; doing the arithmetic
   again is how the UI and the assistant start disagreeing about the same number.
-- **Format money and dates through `format.ts`.** The system prompt tells the assistant to write
-  €1,240.50 and 26/07/2026. If a table formats them differently, the chat and the page it sits next
-  to contradict each other on screen.
+- **Format money and dates through `format.ts`.** Currency, locale and the tax label are server
+  configuration (`Invoicing:*`), fetched once from `GET /api/config` before the first paint. The
+  same values render the assistant's formatting instruction, so a hardcoded `€` or a locally built
+  `Intl.NumberFormat` puts the chat and the table beside it into contradiction on any deployment
+  that is not the default one.
 
 ## The failure modes to avoid
 

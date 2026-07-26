@@ -1,16 +1,23 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Role } from '../api/types';
 import { RoleBadge } from '../components/Pills';
 import { useAuth } from '../auth/useAuth';
+import { appConfig, formatMoney } from '../format';
 
-/** The seeded demo users. The password is shared and public: this is a demo repo on purpose. */
-const demoUsers: { email: string; name: string; role: Role; can: string }[] = [
+/**
+ * The seeded demo users. The password is shared and public: this is a demo repo on purpose.
+ * The Accountant's ceiling is quoted from the server's own limit rather than written into the
+ * copy, so changing `Invoicing:AccountantMarkPaidLimit` cannot leave this screen lying.
+ */
+const demoUsers = (
+  settlementLimit: string,
+): { email: string; name: string; role: Role; can: string }[] => [
   { email: 'ana@demo', name: 'Ana Ferrer', role: 'Admin', can: 'Everything, including cancelling' },
   {
     email: 'carlos@demo',
     name: 'Carlos Ibáñez',
     role: 'Accountant',
-    can: 'Read, draft, send, settle up to €1,000',
+    can: `Read, draft, send, settle up to ${settlementLimit}`,
   },
   { email: 'lucia@demo', name: 'Lucía Prat', role: 'Viewer', can: 'Read only' },
 ];
@@ -21,6 +28,7 @@ export function LoginPage() {
   const { signIn } = useAuth();
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const users = useMemo(() => demoUsers(formatMoney(appConfig().accountantMarkPaidLimit)), []);
 
   async function handleSignIn(email: string) {
     setPending(email);
@@ -57,7 +65,7 @@ export function LoginPage() {
             ['Propagated identity', "Tools call our own REST API with the user's bearer token"],
             ['Server-side write gate', 'Writes are proposed, then confirmed by a human'],
             ['Evals in CI', 'A prompt regression breaks the pipeline'],
-            ['Cost and traces', 'Tokens, euros and latency per conversation'],
+            ['Cost and traces', 'Tokens, cost and latency per conversation'],
           ].map(([term, description], index) => (
             <div key={term} className="ledger-row" style={{ animationDelay: `${index * 70}ms` }}>
               <dt className="border-rule border-t pt-3 text-sm font-semibold">{term}</dt>
@@ -79,7 +87,7 @@ export function LoginPage() {
           </header>
 
           <ul>
-            {demoUsers.map((user) => (
+            {users.map((user) => (
               <li key={user.email} className="border-rule border-b last:border-b-0">
                 <button
                   type="button"

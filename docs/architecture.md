@@ -41,7 +41,7 @@ Shared demo password: `demo1234`.
 | User | Role | Headline |
 |---|---|---|
 | ana@demo | Admin | Everything |
-| carlos@demo | Accountant | Read everything; create drafts; mark paid up to €1,000 |
+| carlos@demo | Accountant | Read everything; create drafts; mark paid up to the settlement ceiling |
 | lucia@demo | Viewer | Read-only |
 
 The full matrix, enforced per endpoint:
@@ -52,17 +52,42 @@ The full matrix, enforced per endpoint:
 | Create draft | ❌ | ✅ | ✅ |
 | Send | ❌ | ✅ | ✅ |
 | Change due date | ❌ | ✅ | ✅ |
-| Mark paid | ❌ | ✅ up to €1,000 | ✅ |
+| Mark paid | ❌ | ✅ up to the ceiling | ✅ |
 | Cancel | ❌ | ❌ | ✅ |
 
-Cancelling is Admin-only because it is the one business action that cannot be undone. The €1,000
-ceiling is `Invoicing:AccountantMarkPaidLimit`, checked by the endpoint — so it applies to curl
-exactly as it applies to the assistant.
+Cancelling is Admin-only because it is the one business action that cannot be undone. The ceiling is
+`Invoicing:AccountantMarkPaidLimit` (€1,000 by default), checked by the endpoint — so it applies to
+curl exactly as it applies to the assistant.
 
 Seed: 8 customers and 41 invoices, generated relative to today so every aging bucket is populated
 whichever day the repo is cloned. One overdue invoice carries a prompt injection in a line
 description on purpose: seed data is untrusted input too, and the F3 injection cases read it back
 through `get_invoice`.
+
+## Money, tax and locale
+
+Everything about money is configuration under `Invoicing:` — see `.env.example` for the environment
+variable names:
+
+| Setting | Default | Reaches |
+|---|---|---|
+| `Currency` | `EUR` | The `currency` field on every list and report response, and the SPA's number formatting |
+| `CurrencySymbol` | `€` | Only the example inside the assistant's formatting instruction |
+| `Locale` | `en-GB` | Number and date rendering on both sides |
+| `TaxLabel` | `VAT` | The tax line on the invoice detail |
+| `DefaultVatRate` | `0.21` | New drafts that do not specify a rate, and the seeded ledger |
+| `ReducedVatRate` | `0.10` | The lower rate sprinkled through the seed |
+| `AccountantMarkPaidLimit` | `1000` | The endpoint's authorization check and the login screen's copy |
+
+The point is that there is exactly one source. `GET /api/config` hands the display settings to the
+SPA before its first paint, and `SystemPromptProvider` renders the same values into the assistant's
+formatting instruction — so the chat and the table beside it cannot disagree about how a number
+looks. `InvoicingConfigurationTests` boots the whole app as a US deployment and checks that,
+including that the seeder stopped using constants of its own.
+
+One subtlety worth knowing: the prompt hash recorded on each conversation covers the *rendered*
+prompt, not the file on disk. Two deployments running the same `prompts/system.md` against different
+currencies were not given the same instruction, and the hash should say so.
 
 ## Business API
 

@@ -1,6 +1,6 @@
 import type { InvoiceDetail } from '../api/types';
 import { StatusPill } from '../components/Pills';
-import { formatDate, formatMoney } from '../format';
+import { appConfig, formatDate, formatMoney } from '../format';
 
 export function InvoiceDetailPanel({
   invoice,
@@ -79,7 +79,9 @@ export function InvoiceDetailPanel({
         <dt className="text-ink-soft">Subtotal</dt>
         <dd className="numeric text-right">{formatMoney(invoice.subtotal)}</dd>
 
-        <dt className="text-ink-soft">VAT ({(invoice.vatRate * 100).toFixed(0)}%)</dt>
+        <dt className="text-ink-soft">
+          {appConfig().taxLabel} ({(invoice.vatRate * 100).toFixed(0)}%)
+        </dt>
         <dd className="numeric text-right">{formatMoney(invoice.vatAmount)}</dd>
 
         <dt className="border-rule mt-1 border-t pt-1 font-semibold">Total</dt>

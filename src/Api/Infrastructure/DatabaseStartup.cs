@@ -1,4 +1,6 @@
+using Api.Features.Invoices;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Api.Infrastructure;
 
@@ -19,9 +21,10 @@ public static class DatabaseStartup
         await using var scope = app.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var clock = scope.ServiceProvider.GetRequiredService<IClock>();
+        var invoicing = scope.ServiceProvider.GetRequiredService<IOptions<InvoicingOptions>>().Value;
 
         await db.Database.MigrateAsync();
-        await DatabaseSeeder.SeedAsync(db, clock);
+        await DatabaseSeeder.SeedAsync(db, clock, invoicing);
 
         app.Logger.LogInformation("Database ready and seeded.");
     }

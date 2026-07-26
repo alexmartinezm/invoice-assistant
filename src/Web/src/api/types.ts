@@ -1,3 +1,12 @@
+/** Display settings from `GET /api/config`; the server is the single source for money and dates. */
+export interface AppConfig {
+  currency: string;
+  locale: string;
+  taxLabel: string;
+  defaultVatRate: number;
+  accountantMarkPaidLimit: number;
+}
+
 export type Role = 'Viewer' | 'Accountant' | 'Admin';
 
 export type InvoiceStatus = 'Draft' | 'Sent' | 'Paid' | 'Cancelled';
