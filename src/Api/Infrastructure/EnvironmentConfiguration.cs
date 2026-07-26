@@ -21,6 +21,7 @@ public static class EnvironmentConfiguration
         ("INVOICING_CURRENCY", "Invoicing:Currency"),
         ("INVOICING_CURRENCY_SYMBOL", "Invoicing:CurrencySymbol"),
         ("INVOICING_LOCALE", "Invoicing:Locale"),
+        ("INVOICING_MARKET", "Invoicing:Market"),
         ("INVOICING_TAX_LABEL", "Invoicing:TaxLabel"),
         ("INVOICING_DEFAULT_VAT_RATE", "Invoicing:DefaultVatRate"),
         ("INVOICING_REDUCED_VAT_RATE", "Invoicing:ReducedVatRate"),

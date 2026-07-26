@@ -24,7 +24,7 @@ public static class DatabaseStartup
         var invoicing = scope.ServiceProvider.GetRequiredService<IOptions<InvoicingOptions>>().Value;
 
         await db.Database.MigrateAsync();
-        await DatabaseSeeder.SeedAsync(db, clock, invoicing);
+        await DatabaseSeeder.SeedAsync(db, clock, invoicing, app.Logger);
 
         app.Logger.LogInformation("Database ready and seeded.");
     }

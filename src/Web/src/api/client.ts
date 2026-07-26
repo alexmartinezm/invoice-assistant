@@ -1,5 +1,6 @@
 import type {
   AppConfig,
+  AuthenticatedUser,
   ChatEvent,
   InvoiceDetail,
   InvoiceFilters,
@@ -63,6 +64,9 @@ async function toApiError(response: Response): Promise<ApiError> {
 export const api = {
   /** Anonymous: the login screen quotes the settlement limit before anyone has a token. */
   config: () => request<AppConfig>('/api/config', null),
+
+  /** Anonymous: the seeded users, so the login selector never keeps its own stale copy. */
+  demoUsers: () => request<AuthenticatedUser[]>('/api/auth/demo-users', null),
 
   login: (email: string, password: string) =>
     request<LoginResponse>('/api/auth/login', null, {

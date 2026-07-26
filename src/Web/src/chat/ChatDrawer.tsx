@@ -7,7 +7,7 @@ import { useChatStream, type ChatItem, type ToolRun } from './useChatStream';
 const suggestions = [
   'How much are we owed?',
   'Which invoices are overdue?',
-  'What does Acme Ibérica owe us?',
+  'Which customer owes us the most?',
 ];
 
 export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {

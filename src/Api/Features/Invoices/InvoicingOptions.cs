@@ -24,6 +24,14 @@ public sealed class InvoicingOptions
     /// </summary>
     public string Locale { get; set; } = "en-GB";
 
+    /// <summary>
+    /// Which seed fixtures to use — whose customers and staff these are. Separate from
+    /// <see cref="Locale"/> on purpose: the locale formats figures for the reader, the market
+    /// decides whose ledger it is, and the two legitimately differ. Unknown values fall back with
+    /// a warning; see <c>MarketFixtures</c> for the available sets.
+    /// </summary>
+    public string Market { get; set; } = "es-ES";
+
     /// <summary>What the tax line is called on screen — VAT, IVA, Sales tax, GST.</summary>
     public string TaxLabel { get; set; } = "VAT";
 

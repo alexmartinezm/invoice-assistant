@@ -17,13 +17,19 @@ public static class DatabaseSeeder
         AppDbContext db,
         IClock clock,
         InvoicingOptions invoicing,
+        ILogger? logger = null,
         CancellationToken cancellationToken = default)
     {
-        await SeedUsersAsync(db, cancellationToken);
-        await SeedInvoicingDataAsync(db, clock, invoicing, cancellationToken);
+        var fixtures = MarketFixtures.For(invoicing.Market, logger);
+
+        await SeedUsersAsync(db, fixtures, cancellationToken);
+        await SeedInvoicingDataAsync(db, clock, invoicing, fixtures, cancellationToken);
     }
 
-    private static async Task SeedUsersAsync(AppDbContext db, CancellationToken cancellationToken)
+    private static async Task SeedUsersAsync(
+        AppDbContext db,
+        MarketFixtures fixtures,
+        CancellationToken cancellationToken)
     {
         if (await db.Users.AnyAsync(cancellationToken))
         {
@@ -32,10 +38,15 @@ public static class DatabaseSeeder
 
         var passwordHash = PasswordHasher.Hash(DemoPassword);
 
-        db.Users.AddRange(
-            new User { Email = "ana@demo", DisplayName = "Ana Ferrer", Role = Role.Admin, PasswordHash = passwordHash },
-            new User { Email = "carlos@demo", DisplayName = "Carlos Ibáñez", Role = Role.Accountant, PasswordHash = passwordHash },
-            new User { Email = "lucia@demo", DisplayName = "Lucía Prat", Role = Role.Viewer, PasswordHash = passwordHash });
+        // The addresses stay the same in every market — the docs, the eval cases and the tests all
+        // name them — while the display names follow the market.
+        db.Users.AddRange(fixtures.Staff.Select(staff => new User
+        {
+            Email = staff.Email,
+            DisplayName = staff.DisplayName,
+            Role = staff.Role,
+            PasswordHash = passwordHash,
+        }));
 
         await db.SaveChangesAsync(cancellationToken);
     }
@@ -44,6 +55,7 @@ public static class DatabaseSeeder
         AppDbContext db,
         IClock clock,
         InvoicingOptions invoicing,
+        MarketFixtures fixtures,
         CancellationToken cancellationToken)
     {
         if (await db.Customers.AnyAsync(cancellationToken))
@@ -51,7 +63,9 @@ public static class DatabaseSeeder
             return;
         }
 
-        var customers = BuildCustomers();
+        var customers = fixtures.Customers
+            .Select(c => new Customer { Name = c.Name, TaxId = c.TaxId, Email = c.Email })
+            .ToArray();
         db.Customers.AddRange(customers);
 
         var today = clock.Today;
@@ -111,18 +125,6 @@ public static class DatabaseSeeder
                 throw new ArgumentOutOfRangeException(nameof(target), target, "Unhandled seed status.");
         }
     }
-
-    private static Customer[] BuildCustomers() =>
-    [
-        new() { Name = "Acme Ibérica SL", TaxId = "B12345678", Email = "facturacion@acme-iberica.es" },
-        new() { Name = "Norvento Energía SA", TaxId = "A87654321", Email = "cuentas@norvento.es" },
-        new() { Name = "Delta Logística SL", TaxId = "B23456789", Email = "admin@deltalogistica.es" },
-        new() { Name = "Estudio Marín Arquitectos", TaxId = "B34567890", Email = "hola@estudiomarin.com" },
-        new() { Name = "Bodegas Ribalta SL", TaxId = "B45678901", Email = "pagos@bodegasribalta.es" },
-        new() { Name = "Clínica Sant Jordi", TaxId = "B56789012", Email = "administracion@santjordi.cat" },
-        new() { Name = "Tarraco Software SL", TaxId = "B67890123", Email = "finance@tarracosoftware.com" },
-        new() { Name = "Hostelería del Puerto SA", TaxId = "A78901234", Email = "contabilidad@hosteleriapuerto.es" },
-    ];
 
     /// <summary>
     /// ~40 invoices laid out so that every aging bucket (current, 1-30, 31-60, 60+) is populated

@@ -26,6 +26,7 @@ public sealed class UnitedStatesApiFactory : ApiFactory
             ["Invoicing:Currency"] = Currency,
             ["Invoicing:CurrencySymbol"] = "$",
             ["Invoicing:Locale"] = "en-US",
+            ["Invoicing:Market"] = "en-US",
             ["Invoicing:TaxLabel"] = "Sales tax",
             ["Invoicing:DefaultVatRate"] = "0.07",
             ["Invoicing:ReducedVatRate"] = "0.02",
@@ -93,7 +94,7 @@ public class InvoicingConfigurationTests(UnitedStatesApiFactory factory)
 
         var response = await client.PostAsJsonAsync("/api/invoices", new
         {
-            customerName = "Tarraco Software",
+            customerName = "Fremont Software",
             lines = new[] { new { description = "Development", quantity = 1, unitPrice = 100m } },
         });
         response.EnsureSuccessStatusCode();
@@ -112,7 +113,7 @@ public class InvoicingConfigurationTests(UnitedStatesApiFactory factory)
 
         var created = await client.PostAsJsonAsync("/api/invoices", new
         {
-            customerName = "Delta Logística",
+            customerName = "Harborview Logistics",
             lines = new[] { new { description = "Development", quantity = 1, unitPrice = 800m } },
         });
         created.EnsureSuccessStatusCode();
@@ -128,6 +129,38 @@ public class InvoicingConfigurationTests(UnitedStatesApiFactory factory)
         var problem = await refused.Content.ReadFromJsonAsync<ProblemPayload>();
         Assert.Equal("amount_limit_exceeded", problem!.Code);
         Assert.Contains("500.00 USD", problem.Detail);
+    }
+
+    [Fact]
+    public async Task The_seeded_customers_and_staff_belong_to_the_configured_market()
+    {
+        using var client = await factory.ClientForAsync("ana@demo");
+
+        var customers = await client.GetFromJsonAsync<CustomerListPayload>("/api/customers");
+        Assert.NotEmpty(customers!.Customers);
+
+        // US company forms and EINs, not Spanish SL/SA and B-prefixed NIFs.
+        Assert.All(customers.Customers, customer =>
+        {
+            Assert.Matches(@"^\d{2}-\d{7}$", customer.TaxId);
+            Assert.DoesNotContain(" SL", customer.Name);
+            Assert.DoesNotContain(" SA", customer.Name);
+        });
+
+        var staff = await client.GetFromJsonAsync<List<StaffPayload>>("/api/auth/demo-users")
+            ?? throw new InvalidOperationException("no demo users returned");
+
+        // Addresses are stable across markets — docs, eval cases and tests name them — while the
+        // display names follow the market.
+        Assert.Equal(
+            ["ana@demo", "carlos@demo", "lucia@demo"],
+            staff.Select(u => u.Email).OrderBy(e => e));
+        Assert.Contains(staff, u => u.DisplayName == "Anna Fisher");
+        Assert.DoesNotContain(staff, u => u.DisplayName.Contains("Ibáñez"));
+
+        // Most privileged first: Role is persisted as a string, so ordering in SQL would put the
+        // Accountant above the Admin.
+        Assert.Equal(["Admin", "Accountant", "Viewer"], staff.Select(u => u.Role));
     }
 
     [Fact]
@@ -155,4 +188,10 @@ public class InvoicingConfigurationTests(UnitedStatesApiFactory factory)
         decimal AccountantMarkPaidLimit);
 
     private sealed record ProblemPayload(string? Code, string? Detail);
+
+    private sealed record CustomerListPayload(int Count, IReadOnlyList<CustomerPayload> Customers);
+
+    private sealed record CustomerPayload(Guid Id, string Name, string TaxId, string Email);
+
+    private sealed record StaffPayload(string Email, string DisplayName, string Role);
 }

@@ -36,7 +36,8 @@ Marking a `Draft` invoice as paid or cancelling a `Paid` one fails in the API wi
 
 ## Seed users
 
-Shared demo password: `demo1234`.
+Shared demo password: `demo1234`. The three addresses are fixed in every market — the docs, the
+eval cases and the tests all name them — while the display names follow `Invoicing:Market`.
 
 | User | Role | Headline |
 |---|---|---|
@@ -64,6 +65,20 @@ whichever day the repo is cloned. One overdue invoice carries a prompt injection
 description on purpose: seed data is untrusted input too, and the F3 injection cases read it back
 through `get_invoice`.
 
+The customers come from `MarketFixtures`, which ships sets for `es-ES`, `en-US`, `en-GB` and
+`de-DE` — each with the company forms, tax-identifier shape and email domains that market actually
+uses (`B12345678` for a Spanish NIF, `41-2039571` for a US EIN, `GB123456789` for a UK VAT number).
+An unrecognised market falls back rather than refusing to boot, preferring the same language first
+and logging what it chose: quietly serving Spanish customers to someone who configured Japan is the
+kind of thing that only surfaces mid-demo.
+
+Note the split between `Market` and `Locale`. The locale formats figures for whoever is reading;
+the market decides whose ledger it is. A London controller reviewing a Spanish subsidiary is a real
+arrangement, so the two are allowed to differ and neither derives from the other.
+
+Company names and tax identifiers are data, so they stay in the form their market uses. Everything
+the repo *writes* — line item descriptions, comments, documentation — is English regardless.
+
 ## Money, tax and locale
 
 Everything about money is configuration under `Invoicing:` — see `.env.example` for the environment
@@ -74,6 +89,7 @@ variable names:
 | `Currency` | `EUR` | The `currency` field on every list and report response, and the SPA's number formatting |
 | `CurrencySymbol` | `€` | Only the example inside the assistant's formatting instruction |
 | `Locale` | `en-GB` | Number and date rendering on both sides |
+| `Market` | `es-ES` | Which seed fixtures: customers, tax-id shape, email domains, staff names |
 | `TaxLabel` | `VAT` | The tax line on the invoice detail |
 | `DefaultVatRate` | `0.21` | New drafts that do not specify a rate, and the seeded ledger |
 | `ReducedVatRate` | `0.10` | The lower rate sprinkled through the seed |
@@ -94,6 +110,8 @@ currencies were not given the same instruction, and the hash should say so.
 Classic REST with role-based authZ on every endpoint (the assistant's write gate is an additional layer, not the only one):
 
 - `POST /api/auth/login` → JWT (60 min) · `GET /api/auth/me`
+- `GET /api/auth/demo-users` (anonymous) — the seeded users for the login selector, so the SPA keeps no second copy of names that vary by market. The shared password is deliberately not returned.
+- `GET /api/config` (anonymous) — currency, locale, tax label and the settlement ceiling
 - `GET /api/customers?query=`, `GET /api/customers/{id}`
 - `GET /api/invoices?status=&customerId=&customerName=&from=&to=&overdue=&limit=`
 - `GET /api/invoices/{number}`
