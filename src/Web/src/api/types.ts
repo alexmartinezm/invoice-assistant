@@ -98,6 +98,64 @@ export type ChatEvent =
   | { type: 'done'; conversationId: string; traceId: string }
   | { type: 'error'; message: string };
 
+/** Totals from `GET /api/usage/summary`. Budget figures are the global wallet, not the caller's. */
+export interface UsageSummary {
+  from: string | null;
+  to: string | null;
+  conversations: number;
+  modelCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  costEur: number;
+  spentTodayEur: number;
+  dailyBudgetEur: number;
+  budgetExhausted: boolean;
+}
+
+export interface ConversationUsageRow {
+  conversationId: string;
+  startedAt: string;
+  userEmail: string;
+  models: string;
+  modelCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  toolCalls: number;
+  costEur: number;
+}
+
+export interface ModelCallRow {
+  at: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  toolCalls: number;
+  latencyMs: number;
+  costEur: number;
+}
+
+export type GateDecision = 'auto' | 'confirmed' | 'denied' | 'blocked';
+
+export interface ToolEventRow {
+  at: string;
+  tool: string;
+  decision: GateDecision;
+}
+
+export interface ConversationUsageDetail {
+  conversationId: string;
+  startedAt: string;
+  userEmail: string;
+  systemPromptHash: string;
+  modelCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  toolCalls: number;
+  costEur: number;
+  calls: ModelCallRow[];
+  toolEvents: ToolEventRow[];
+}
+
 /**
  * What became of a proposed write. `summary` and `message` are both written by the server: the
  * sentence a person agreed to, and the sentence describing what happened, are never the model's.

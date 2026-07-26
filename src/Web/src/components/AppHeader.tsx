@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NavLink } from 'react-router-dom';
 import { RoleBadge } from './Pills';
 import { useSession } from '../auth/useAuth';
 
@@ -14,7 +15,13 @@ export function AppHeader({ onOpenChat }: { onOpenChat: () => void }) {
         <span className="font-display min-w-0 truncate text-base tracking-tight sm:text-lg">
           invoice-assistant
         </span>
-        <span className="text-ink-faint hidden font-mono text-xs sm:inline">/ receivables</span>
+
+        {/* The breadcrumb grew a second page in F4 and became the nav. Same register as before:
+            path-like, monospace, quiet — the active page is inked, the other is faint. */}
+        <nav aria-label="Pages" className="flex items-center gap-2 font-mono text-xs">
+          <PageLink to="/invoices" label="receivables" />
+          <PageLink to="/usage" label="usage" />
+        </nav>
 
         <div className="flex-1" />
 
@@ -53,6 +60,23 @@ export function AppHeader({ onOpenChat }: { onOpenChat: () => void }) {
         </div>
       </div>
     </header>
+  );
+}
+
+function PageLink({ to, label }: { to: string; label: string }) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `whitespace-nowrap transition-colors ${
+          isActive
+            ? 'text-ink underline decoration-[var(--accent)] underline-offset-4'
+            : 'text-ink-faint hover:text-ink'
+        }`
+      }
+    >
+      / {label}
+    </NavLink>
   );
 }
 
