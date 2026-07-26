@@ -62,8 +62,9 @@ public sealed record ConversationUsageDetail(
 public static class UsageEndpoints
 {
     /// <summary>
-    /// How many conversations the list returns. There is no paging: this is a demo ledger, and the
-    /// page says so rather than pretending the newest hundred are all of them.
+    /// How many conversations the list returns, newest first. There is no paging and no total, so
+    /// past this many the page silently shows a window rather than the whole ledger — acceptable
+    /// for a demo, and the first thing to fix if this ever ran somewhere busy.
     /// </summary>
     public const int MaxConversations = 100;
 
