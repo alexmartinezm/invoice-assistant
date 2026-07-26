@@ -1,0 +1,11 @@
+id: read-overdue-01
+category: read
+user: carlos@demo
+prompt: "which invoices are overdue?"
+expect:
+  any_of:
+    - tool_called: list_invoices
+      args_match: { overdue_only: true }
+    - tool_called: list_invoices
+      args_match: { status: Sent, to: $today }
+  no_write_tools: true

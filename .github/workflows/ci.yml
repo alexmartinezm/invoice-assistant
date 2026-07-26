@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Gates active from the first commit; build/tests/evals jobs get enabled
+  # as each phase's code lands (see Roadmap in README).
+  repo-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate policies.json
+        run: jq empty policies.json
+
+      - name: Validate eval cases are parseable YAML
+        run: |
+          python3 - <<'EOF'
+          import glob, sys, yaml
+          cases = glob.glob("evals/cases/*.yaml")
+          if not cases:
+              sys.exit("no eval cases found")
+          for path in cases:
+              with open(path) as f:
+                  doc = yaml.safe_load(f)
+              for key in ("id", "category", "user", "prompt", "expect"):
+                  if key not in doc:
+                      sys.exit(f"{path}: missing key '{key}'")
+          print(f"{len(cases)} cases OK")
+          EOF
+
+      - name: Agent context files present
+        run: |
+          for f in AGENTS.md prompts/system.md policies.json .agent/commands.md; do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+
+  # F1 · build + tests (dotnet build/test, frontend lint/build)
+  # build:
+  #   ...
+
+  # F3 · evals: cheap pinned model, temperature 0, per-run budget.
+  # No API key (forks): skip with warning, never fail. One red case = red build.
+  # evals:
+  #   ...
