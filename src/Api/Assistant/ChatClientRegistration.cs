@@ -1,5 +1,6 @@
 using System.ClientModel;
 using Api.Assistant.Tools;
+using Api.Assistant.Usage;
 using Api.Infrastructure;
 using Azure.AI.OpenAI;
 using Microsoft.Extensions.AI;
@@ -20,6 +21,8 @@ public static class ChatClientRegistration
     {
         services.Configure<AssistantOptions>(configuration.GetSection(AssistantOptions.SectionName));
         services.Configure<AiOptions>(configuration.GetSection(AiOptions.SectionName));
+        services.Configure<UsageOptions>(configuration.GetSection(UsageOptions.SectionName));
+        services.AddScoped<UsageBudget>();
 
         services.AddSingleton<SystemPromptProvider>();
         services.AddScoped<ReadTools>();
@@ -56,17 +59,36 @@ public static class ChatClientRegistration
         var detailedToolErrors = configuration["ASPNETCORE_ENVIRONMENT"] is "Development";
 
         services.AddSingleton(DescribeAvailability(ai));
-        services.AddChatClient(provider => BuildChatClient(ai, provider))
+        services.AddAssistantChatPipeline(provider => BuildChatClient(ai, provider), policy, detailedToolErrors);
+
+        return services;
+    }
+
+    /// <summary>
+    /// The chat pipeline around whatever stands in for the provider — the real client here, a
+    /// scripted one in the tests, a recorded one in the evals. Shared so that every consumer runs
+    /// the same middleware: the function-invoking loop with its brake, and the usage collector
+    /// metering each model call inside that loop.
+    /// </summary>
+    public static ChatClientBuilder AddAssistantChatPipeline(
+        this IServiceCollection services,
+        Func<IServiceProvider, IChatClient> providerFactory,
+        PolicyDocument policy,
+        bool detailedToolErrors) =>
+        services.AddChatClient(providerFactory)
             .UseFunctionInvocation(configure: client =>
             {
                 // The loop brake, from policies.json like every other limit. It stops the model
                 // going round for ever; ToolGate is what refuses an individual call.
                 client.MaximumIterationsPerRequest = policy.Limits.MaxToolCallsPerTurn;
                 client.IncludeDetailedErrors = detailedToolErrors;
-            });
-
-        return services;
-    }
+            })
+            .Use((inner, provider) => new UsageCollector(
+                inner,
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<IHttpContextAccessor>(),
+                provider.GetRequiredService<IOptions<UsageOptions>>(),
+                provider.GetRequiredService<ILogger<UsageCollector>>()));
 
     private static PolicyDocument LoadPolicy(IConfiguration configuration, IHostEnvironment environment)
     {

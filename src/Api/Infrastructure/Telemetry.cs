@@ -44,6 +44,7 @@ public static class Telemetry
             .WithMetrics(metrics =>
             {
                 metrics
+                    .AddMeter(AssistantTelemetry.MeterName)
                     .AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation();
 

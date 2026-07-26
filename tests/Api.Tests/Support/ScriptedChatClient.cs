@@ -10,6 +10,13 @@ namespace Api.Tests.Support;
 /// </summary>
 public sealed class ScriptedChatClient : IChatClient
 {
+    public const string ScriptedModelId = "scripted-model";
+
+    /// <summary>Fixed usage per round trip, so cost assertions are arithmetic, not tolerance.</summary>
+    public const int PromptTokensPerCall = 120;
+
+    public const int CompletionTokensPerCall = 45;
+
     private readonly Queue<IReadOnlyList<AIContent>> _turns = new();
 
     /// <summary>Everything the model was shown, so tests can assert on prompt and history.</summary>
@@ -66,8 +73,27 @@ public sealed class ScriptedChatClient : IChatClient
         foreach (var content in contents)
         {
             await Task.Yield();
-            yield return new ChatResponseUpdate(ChatRole.Assistant, [content]) { MessageId = messageId };
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [content])
+            {
+                MessageId = messageId,
+                ModelId = ScriptedModelId,
+            };
         }
+
+        // Usage arrives as the stream's final chunk, the way real providers report it, so the
+        // usage collector is exercised on the same shape it sees in production.
+        yield return new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [new UsageContent(new UsageDetails
+            {
+                InputTokenCount = PromptTokensPerCall,
+                OutputTokenCount = CompletionTokensPerCall,
+                TotalTokenCount = PromptTokensPerCall + CompletionTokensPerCall,
+            })])
+        {
+            MessageId = messageId,
+            ModelId = ScriptedModelId,
+        };
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null) => null;

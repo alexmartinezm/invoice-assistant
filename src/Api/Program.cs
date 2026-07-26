@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
 using Api.Assistant;
+using Api.Assistant.Usage;
 using Api.Domain;
 using Api.Features.Actions;
 using Api.Features.Auth;
@@ -110,7 +111,8 @@ app.MapConfigEndpoints()
     .MapInvoiceEndpoints()
     .MapReportEndpoints()
     .MapChatEndpoints()
-    .MapActionEndpoints();
+    .MapActionEndpoints()
+    .MapUsageEndpoints();
 
 // Production single-container layout: the built SPA lands in wwwroot and the API serves it.
 if (Directory.Exists(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "assets")))

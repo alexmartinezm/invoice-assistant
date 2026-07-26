@@ -89,6 +89,11 @@ public class ApiFactory : WebApplicationFactory<Program>
             ["AI:Provider"] = "azure-openai",
             ["AI:AzureEndpoint"] = string.Empty,
             ["OTEL_CONSOLE_EXPORTER"] = "false",
+            // A price for the scripted model, in round numbers, so usage assertions can say
+            // exactly what a call costs: 120 in + 45 out = 0.0021€ per scripted round trip.
+            ["Usage:Prices:0:Model"] = ScriptedChatClient.ScriptedModelId,
+            ["Usage:Prices:0:InputPer1MEur"] = "10",
+            ["Usage:Prices:0:OutputPer1MEur"] = "20",
         };
 
         foreach (var (key, value) in ExtraConfiguration)
@@ -106,13 +111,10 @@ public class ApiFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<IChatClient>();
 
-            // The same configure callback the app applies. Without it the iteration cap is the
-            // framework default, and every per-turn limit test would pass for the wrong reason.
-            services.AddChatClient(Model).UseFunctionInvocation(configure: client =>
-            {
-                client.MaximumIterationsPerRequest = Policy.Limits.MaxToolCallsPerTurn;
-                client.IncludeDetailedErrors = true;
-            });
+            // The app's own pipeline around the scripted model. Without it the iteration cap and
+            // the usage collector would be missing, and both the per-turn limit tests and the
+            // usage tests would pass for the wrong reason.
+            services.AddAssistantChatPipeline(_ => Model, Policy, detailedToolErrors: true);
 
             services.Replace(ServiceDescriptor.Singleton(
                 new Api.Assistant.AssistantAvailability(IsConfigured: true, Reason: string.Empty)));
