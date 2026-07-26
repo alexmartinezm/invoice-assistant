@@ -85,6 +85,7 @@ public sealed class EvalRunner(EvalHost host)
         }
 
         host.Recorder.BeginTurn();
+        host.ServerLogs.Clear();
 
         using var client = await host.ClientForAsync(evalCase.User);
         using var response = await client.PostAsJsonAsync("/api/chat", new { message = prompt });
@@ -97,7 +98,10 @@ public sealed class EvalRunner(EvalHost host)
         var events = await ServerSentEvents.ReadAllAsync(response);
         if (events.FirstOrDefault(e => e.Name == "error") is { } error)
         {
-            return $"The turn failed: {error.Data}";
+            // The SSE payload hides the reason on purpose; the harness's log capture has it.
+            return host.ServerLogs.Latest is { } serverLog
+                ? $"The turn failed: {error.Data}\nServer log: {serverLog}"
+                : $"The turn failed: {error.Data}";
         }
 
         TurnFacts facts;

@@ -12,6 +12,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using OpenAI;
 
@@ -59,6 +60,9 @@ public class EvalHost : WebApplicationFactory<Program>
 
     public RecordingChatClient Recorder { get; }
 
+    /// <summary>The app's warning-and-worse logs, so a dead turn can say why it died.</summary>
+    public ServerLogCapture ServerLogs { get; } = new();
+
     /// <summary>An <see cref="HttpClient"/> already carrying the given demo user's bearer token.</summary>
     public async Task<HttpClient> ClientForAsync(string email)
     {
@@ -87,6 +91,8 @@ public class EvalHost : WebApplicationFactory<Program>
                 ["Assistant:TurnsPerMinute"] = "1000",
                 ["OTEL_CONSOLE_EXPORTER"] = "false",
             }));
+
+        builder.ConfigureLogging(logging => logging.AddProvider(ServerLogs));
 
         builder.ConfigureTestServices(services =>
         {
