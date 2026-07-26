@@ -54,7 +54,11 @@ export interface InvoiceDetail extends InvoiceSummary {
 export interface InvoiceList {
   asOf: string;
   currency: string;
+  /** How many invoices this response carries. */
   count: number;
+  /** How many match the filters in total; larger than `count` when the page was cut short. */
+  total: number;
+  truncated: boolean;
   invoices: InvoiceSummary[];
 }
 

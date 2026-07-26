@@ -101,6 +101,11 @@ public static class InvoiceEndpoints
         }
 
         var pageSize = Math.Clamp(limit ?? settings.DefaultPageSize, 1, settings.MaxPageSize);
+
+        // Counted before the page is taken. The assistant reads this payload as-is, so a page that
+        // does not say how much it left behind is a wrong answer waiting to be relayed as a fact.
+        var total = await query.CountAsync(cancellationToken);
+
         var invoices = await query
             .OrderBy(i => i.DueDate)
             .ThenBy(i => i.Number)
@@ -108,7 +113,8 @@ public static class InvoiceEndpoints
             .ToListAsync(cancellationToken);
 
         var summaries = invoices.Select(i => i.ToSummary(today)).ToList();
-        return Results.Ok(new InvoiceList(today, settings.Currency, summaries.Count, summaries));
+        return Results.Ok(new InvoiceList(
+            today, settings.Currency, summaries.Count, total, total > summaries.Count, summaries));
     }
 
     private static async Task<IResult> GetAsync(
