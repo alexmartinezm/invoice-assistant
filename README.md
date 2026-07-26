@@ -16,13 +16,14 @@
 ```mermaid
 flowchart TD
     UI[Chat UI] -->|POST /api/chat SSE| ORCH[ChatOrchestrator]
-    ORCH --> LLM[IChatClient + tools]
-    LLM -->|tool call| GATE[ToolPolicyEngine]
-    GATE -->|allow| EXEC[ToolExecutor → HTTP to our own API with the user's JWT]
+    ORCH --> LOOP[Tool-calling loop]
+    LOOP --> USAGE[UsageCollector · daily cap, then tokens, €, latency]
+    USAGE --> MODEL[Model provider]
+    LOOP -->|tool call| GATE[ToolGate + ToolPolicyEngine]
+    GATE -->|allow| EXEC[HTTP to our own API with the user's JWT]
     GATE -->|require_confirmation| PA[PendingAction → human approval]
-    GATE -->|deny| BLOCK[AuditEvent blocked → the model explains it]
+    GATE -->|deny or limit reached| BLOCK[AuditEvent → the model explains it]
     EXEC --> API[REST API · role-based authZ · deterministic domain]
-    ORCH --> USAGE[UsageCollector · tokens, €, latency]
 ```
 
 The golden rule: **the system prompt can ask for good behavior; only the server can guarantee it.** The prompt is UX, the policy is security. Key decisions are documented as ADRs in [`docs/adr/`](docs/adr/).
@@ -42,7 +43,8 @@ invoice-assistant/
 ├── prompts/system.md             # Versioned system prompt (hash per conversation)
 ├── policies.json                 # Write gate: structured rules, no DSL
 ├── docs/                         # Architecture + ADRs
-├── docker-compose.yml            # PostgreSQL for development
+├── Dockerfile                    # SPA build → API publish → one runtime image
+├── docker-compose.yml            # The whole demo, or just PostgreSQL for development
 └── .github/workflows/ci.yml      # repo checks → backend → frontend → evals
 ```
 
@@ -63,21 +65,41 @@ invoice-assistant/
 ## Quick start
 
 ```bash
-cp .env.example .env             # optional: add an AI provider key
-docker compose up -d postgres    # PostgreSQL (ADR 006)
-
-dotnet run --project src/Api     # http://localhost:5080
-npm install --prefix src/Web && npm run dev --prefix src/Web
+cp .env.example .env    # optional: add an AI provider key
+docker compose up       # http://localhost:8080
 ```
 
-Open http://localhost:5173 and pick one of the three demo users; the shared password is `demo1234`.
-Migrations and around 40 seeded invoices are applied on startup, so there is no database step.
+One container serves both the API and the SPA. Pick one of the three demo users; the shared password
+is `demo1234`. Migrations and around 40 seeded invoices are applied on startup, so there is no
+database step.
+
+Developing rather than demoing — two terminals, with hot reload:
+
+```bash
+docker compose up -d postgres    # just the database (ADR 006)
+dotnet run --project src/Api     # http://localhost:5080
+npm install --prefix src/Web && npm run dev --prefix src/Web   # http://localhost:5173
+```
 
 **Without an AI key** the ledger, filters and API all work; only `/api/chat` answers 503 telling you
 which variables it wants. That is deliberate — you can read and run the repo before signing up to a
 provider.
 
 All commands, including the quality gates, live in [`.agent/commands.md`](.agent/commands.md).
+
+## What a conversation costs
+
+Every call to the model is metered where it happens — inside the tool-calling loop, not once per
+turn, because a turn that uses tools makes several calls. Each one is recorded with its tokens,
+latency and cost in euros, priced from a table in configuration; the **Usage** page shows the total
+per conversation and a timeline that interleaves each model call with the write gate's decisions.
+
+The same table backs the **spend kill switch**: a global daily cap (`USAGE_DAILY_BUDGET_EUR`, 1€ by
+default) checked before the turn starts *and* before every model call inside it. Once it is spent,
+`/api/chat` answers `429` and the rest of the app carries on working. A per-user rate limit does
+nothing about a scraper with many IPs — the euro cap is what makes a public demo safe to leave
+running with a real key in it. The reasoning, including what happens to a model with no configured
+price, is in [ADR 008](docs/adr/008-cost-accounting-and-the-spend-kill-switch.md).
 
 ## Roadmap
 
@@ -87,8 +109,9 @@ All commands, including the quality gates, live in [`.agent/commands.md`](.agent
   PendingAction with approve/reject, AuditEvent, idempotency and per-turn limits.
 - **F3 · Evals + CI** ✅ — xUnit harness against a real model, 35 fact-based cases, CI job with
   per-run token budget and markdown report; a one-line prompt regression turns the pipeline red.
-- **F4 · Cost, traces and polish** — UsageCollector, spend kill switch, Usage page, OpenTelemetry,
-  Docker and deploy.
+- **F4 · Cost, traces and polish** ✅ — UsageCollector metering every model call, global daily spend
+  kill switch, Usage page with per-conversation cost timelines, OpenTelemetry traces and metrics,
+  single-container Docker build.
 
 Roles are visible in the chat from F2 on. A Viewer's write is refused outright by policy; an
 Accountant settles small invoices without being asked, is asked to confirm larger ones, and is
