@@ -1,7 +1,12 @@
 import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { RoleBadge } from './Pills';
 import { useSession } from '../auth/useAuth';
+
+const pages = [
+  { to: '/invoices', label: 'receivables' },
+  { to: '/usage', label: 'usage' },
+];
 
 export function AppHeader({ onOpenChat }: { onOpenChat: () => void }) {
   const { session, signOut } = useSession();
@@ -11,25 +16,24 @@ export function AppHeader({ onOpenChat }: { onOpenChat: () => void }) {
     <header className="border-rule bg-paper/85 sticky top-0 z-20 border-b backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center gap-2 px-4 py-3 sm:gap-4 sm:px-6">
         {/* The wordmark is the element that yields when the row is tight — the role badge and the
-            drawer trigger are functional, a logo is not. */}
-        <span className="font-display min-w-0 truncate text-base tracking-tight sm:text-lg">
+            drawer trigger are functional, a logo is not. Below `sm` it goes entirely rather than
+            truncating: at 375px it rendered as a nine-pixel sliver of itself, which reads as a
+            rendering fault rather than as restraint. */}
+        <span className="font-display hidden min-w-0 truncate text-base tracking-tight sm:block sm:text-lg">
           invoice-assistant
         </span>
 
-        {/* The breadcrumb grew a second page in F4 and became the nav. Same register as before:
-            path-like, monospace, quiet — the active page is inked, the other is faint. */}
-        <nav aria-label="Pages" className="flex items-center gap-2 font-mono text-xs">
-          <PageLink to="/invoices" label="receivables" />
-          <PageLink to="/usage" label="usage" />
-        </nav>
+        <PageNav />
 
         <div className="flex-1" />
 
-        {/* Short enough to stay on one line at 320px: a wrapped CTA label reads as broken. */}
+        {/* Short enough to stay on one line at 320px: a wrapped CTA label reads as broken. It
+            steps down a size on the narrowest phones so the role badge — `ACCOUNTANT` is the wide
+            one — keeps its place in the row. */}
         <button
           type="button"
           onClick={onOpenChat}
-          className="border-accent text-accent-ink bg-accent-soft hover:bg-accent hover:text-paper shrink-0 rounded-md border px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors lg:hidden"
+          className="border-accent text-accent-ink bg-accent-soft hover:bg-accent hover:text-paper shrink-0 rounded-md border px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors sm:px-3 sm:text-sm lg:hidden"
         >
           Assistant
         </button>
@@ -63,6 +67,38 @@ export function AppHeader({ onOpenChat }: { onOpenChat: () => void }) {
   );
 }
 
+/**
+ * The breadcrumb grew a second page and became the navigation, in the same register it always had:
+ * path-like, monospace, quiet, with the active page inked and the other faint.
+ *
+ * Below `sm` it collapses to a link to the *other* page rather than listing both. Two full labels,
+ * the drawer trigger and the role badge do not fit at 320px — and with `ACCOUNTANT` in the badge
+ * they overflow by a wide margin, which is the case that matters because the role is the thing this
+ * header exists to show. A menu would be ceremony for one destination; a switch is what two pages
+ * actually need.
+ */
+function PageNav() {
+  const { pathname } = useLocation();
+  const other = pages.find((page) => !pathname.startsWith(page.to)) ?? pages[1]!;
+
+  return (
+    <nav aria-label="Pages" className="font-mono text-xs">
+      <Link
+        to={other.to}
+        className="text-ink-faint hover:text-ink whitespace-nowrap transition-colors sm:hidden"
+      >
+        → {other.label}
+      </Link>
+
+      <span className="hidden items-center gap-3 sm:flex">
+        {pages.map((page) => (
+          <PageLink key={page.to} to={page.to} label={page.label} />
+        ))}
+      </span>
+    </nav>
+  );
+}
+
 function PageLink({ to, label }: { to: string; label: string }) {
   return (
     <NavLink
@@ -70,7 +106,7 @@ function PageLink({ to, label }: { to: string; label: string }) {
       className={({ isActive }) =>
         `whitespace-nowrap transition-colors ${
           isActive
-            ? 'text-ink underline decoration-[var(--accent)] underline-offset-4'
+            ? 'text-ink decoration-accent underline underline-offset-4'
             : 'text-ink-faint hover:text-ink'
         }`
       }

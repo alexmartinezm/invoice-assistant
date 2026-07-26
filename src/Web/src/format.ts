@@ -97,6 +97,10 @@ export const formatCostEur = (amount: number) => cost.format(amount);
 
 export const formatCount = (value: number) => count.format(value);
 
+/** "1 conversation", "2 conversations". Regular plurals only — every caller here has one. */
+export const pluralize = (value: number, noun: string) =>
+  `${count.format(value)} ${noun}${value === 1 ? '' : 's'}`;
+
 /** Takes the API's `yyyy-MM-dd`, which is a calendar date with no timezone to shift it. */
 export function formatDate(isoDate: string): string {
   const [year, month, day] = isoDate.slice(0, 10).split('-').map(Number);

@@ -49,9 +49,13 @@ export function ConversationDetailPanel({
           <h2 id="conversation-detail" className="font-display text-lg">
             Conversation cost
           </h2>
-          <p className="text-ink-soft mt-0.5 truncate text-sm">
+          {/* Wraps rather than truncates: at 375px the truncation ate the whole address and left
+              an ellipsis, and whose conversation this is is half of what the line says. */}
+          <p className="text-ink-soft mt-0.5 text-sm">
             {formatDateTime(detail.startedAt)} ·{' '}
-            <span className="font-mono">{detail.userEmail}</span>
+            {/* break-words, not break-all: the address moves to its own line whole rather than
+                being split down the middle as "ca / rlos@demo". */}
+            <span className="font-mono break-words">{detail.userEmail}</span>
           </p>
         </div>
         <p className="numeric text-lg whitespace-nowrap">{formatCostEur(detail.costEur)}</p>
@@ -83,9 +87,12 @@ export function ConversationDetailPanel({
           >
             <span className="numeric text-ink-faint shrink-0 text-xs">{formatTime(entry.at)}</span>
 
+            {/* The middle column wraps instead of truncating. Tokens and latency are the reason
+                this timeline exists; clipping them to fit a phone would leave the row saying
+                nothing but the time and the price. */}
             {entry.kind === 'call' ? (
               <>
-                <span className="min-w-0 flex-1 truncate">
+                <span className="min-w-0 flex-1">
                   <span className="font-mono text-xs">{entry.model}</span>
                   <span className="text-ink-soft ml-2 text-xs">
                     {entry.tokens} · <span className="numeric">{entry.latencyMs}</span> ms
@@ -94,7 +101,7 @@ export function ConversationDetailPanel({
                 <span className="numeric shrink-0 text-right">{formatCostEur(entry.costEur)}</span>
               </>
             ) : (
-              <span className="min-w-0 flex-1 truncate">
+              <span className="min-w-0 flex-1">
                 <span className="font-mono text-xs">{entry.tool}</span>
                 <span className={`ml-2 text-xs font-medium ${decisionText[entry.decision]}`}>
                   {entry.decision}

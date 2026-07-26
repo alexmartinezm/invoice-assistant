@@ -1,5 +1,5 @@
 import type { UsageSummary } from '../api/types';
-import { formatCostEur, formatCount } from '../format';
+import { formatCostEur, formatCount, pluralize } from '../format';
 
 /**
  * The cost headline, shaped like the receivables strip: one big number, a proportional bar, and
@@ -17,8 +17,8 @@ export function UsageStrip({ summary }: { summary: UsageSummary }) {
           Assistant spend
         </h2>
         <p className="text-ink-faint font-mono text-xs">
-          {formatCount(summary.conversations)} conversations · {formatCount(summary.modelCalls)}{' '}
-          model calls
+          {pluralize(summary.conversations, 'conversation')} ·{' '}
+          {pluralize(summary.modelCalls, 'model call')}
         </p>
       </div>
 
