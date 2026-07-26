@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -13,6 +14,8 @@ namespace Api.Assistant.Tools;
 /// </summary>
 public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpContextAccessor, ILogger<SelfApiClient> logger)
 {
+    private static readonly JsonSerializerOptions RequestJson = new(JsonSerializerDefaults.Web);
+
     /// <summary>
     /// Returns the API's response as parsed JSON on success, or a small structured error the model
     /// can act on — including a 403, which is what propagated identity looks like from here.
@@ -22,26 +25,68 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
     /// gets serialized into the conversation as a quoted, escape-laden blob, which costs tokens and
     /// buries the data one level deeper than the model expects.
     /// </remarks>
-    public async Task<JsonElement> GetJsonAsync(string relativeUrl, CancellationToken cancellationToken)
+    public Task<JsonElement> GetJsonAsync(string relativeUrl, CancellationToken cancellationToken) =>
+        SendAsync(HttpMethod.Get, relativeUrl, body: null, idempotencyKey: null, cancellationToken);
+
+    /// <summary>
+    /// Performs a write against our own API.
+    /// </summary>
+    /// <remarks>
+    /// The idempotency key is not optional in practice: a tool call can be retried by the model,
+    /// by the middleware, or by a user clicking approve twice, and "send the invoice" is not
+    /// something to do twice because a socket hiccuped.
+    /// </remarks>
+    public Task<JsonElement> SendJsonAsync(
+        HttpMethod method,
+        string relativeUrl,
+        object? body,
+        string idempotencyKey,
+        CancellationToken cancellationToken) =>
+        SendAsync(method, relativeUrl, body, idempotencyKey, cancellationToken);
+
+    private async Task<JsonElement> SendAsync(
+        HttpMethod method,
+        string relativeUrl,
+        object? body,
+        string? idempotencyKey,
+        CancellationToken cancellationToken)
     {
         var uri = new Uri(ResolveBaseAddress(), relativeUrl);
 
         using var activity = AssistantTelemetry.Source.StartActivity("assistant.api_call");
-        activity?.SetTag("http.request.method", "GET");
+        activity?.SetTag("http.request.method", method.Method);
         activity?.SetTag("url.path", uri.AbsolutePath);
 
-        using var response = await http.GetAsync(uri, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var request = new HttpRequestMessage(method, uri);
+
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(body, options: RequestJson);
+        }
+
+        if (idempotencyKey is not null)
+        {
+            request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        }
+
+        using var response = await http.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
         activity?.SetTag("http.response.status_code", (int)response.StatusCode);
 
         if (!response.IsSuccessStatusCode)
         {
             logger.LogInformation("Tool call to {Path} was rejected with {Status}", uri.AbsolutePath, (int)response.StatusCode);
             activity?.SetStatus(ActivityStatusCode.Error, response.StatusCode.ToString());
-            return DescribeFailure(response.StatusCode, body);
+            return DescribeFailure(response.StatusCode, responseBody);
         }
 
-        if (TryParse(body, out var payload))
+        // 204 and an empty 200 are legitimate write responses with nothing to hand the model.
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return JsonSerializer.SerializeToElement(new { status = "ok" });
+        }
+
+        if (TryParse(responseBody, out var payload))
         {
             return payload;
         }

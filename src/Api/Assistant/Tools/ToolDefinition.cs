@@ -30,4 +30,13 @@ public sealed record ToolDefinition(
     public string Name => Function.Name;
 
     public string Description => Function.Description;
+
+    public ToolIdentity Identity => new(Name, SideEffect, RequiredRole);
 }
+
+/// <summary>
+/// The part of a tool the policy engine actually decides on. Kept separate from
+/// <see cref="ToolDefinition"/> so the gate does not need the catalog — the catalog builds the
+/// tools, and a tool that needed the catalog to gate itself would be a cycle.
+/// </summary>
+public sealed record ToolIdentity(string Name, ToolSideEffect SideEffect, Role RequiredRole);

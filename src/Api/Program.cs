@@ -3,6 +3,7 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Api.Assistant;
 using Api.Domain;
+using Api.Features.Actions;
 using Api.Features.Auth;
 using Api.Features.Config;
 using Api.Features.Customers;
@@ -61,7 +62,7 @@ builder.Services.AddAuthorizationBuilder()
 
 // --- Assistant --------------------------------------------------------------------------------
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddAssistant(builder.Configuration);
+builder.Services.AddAssistant(builder.Configuration, builder.Environment);
 
 // Every turn costs money, so the chat endpoint is limited per user rather than per IP.
 builder.Services.AddRateLimiter(limiter =>
@@ -108,7 +109,8 @@ app.MapConfigEndpoints()
     .MapCustomerEndpoints()
     .MapInvoiceEndpoints()
     .MapReportEndpoints()
-    .MapChatEndpoints();
+    .MapChatEndpoints()
+    .MapActionEndpoints();
 
 // Production single-container layout: the built SPA lands in wwwroot and the API serves it.
 if (Directory.Exists(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "assets")))

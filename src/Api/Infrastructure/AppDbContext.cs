@@ -14,6 +14,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<Conversation> Conversations => Set<Conversation>();
 
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+
+    public DbSet<PendingAction> PendingActions => Set<PendingAction>();
+
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(user =>
@@ -92,6 +98,45 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             message.ToTable("messages");
             message.HasKey(m => m.Id);
             message.Property(m => m.Role).HasConversion<string>().HasMaxLength(20);
+        });
+
+        modelBuilder.Entity<AuditEvent>(audit =>
+        {
+            audit.ToTable("audit_events");
+            audit.HasKey(a => a.Id);
+
+            // The two questions asked of this table are "what happened in this conversation?" and
+            // "did anything execute?", so both are indexed.
+            audit.HasIndex(a => a.ConversationId);
+            audit.HasIndex(a => a.Decision);
+            audit.Property(a => a.Action).HasMaxLength(50);
+            audit.Property(a => a.ToolName).HasMaxLength(50);
+            audit.Property(a => a.Decision).HasConversion<string>().HasMaxLength(20);
+            audit.Property(a => a.PayloadJson).HasColumnType("jsonb");
+        });
+
+        modelBuilder.Entity<PendingAction>(action =>
+        {
+            action.ToTable("pending_actions");
+            action.HasKey(p => p.Id);
+            action.HasIndex(p => p.UserId);
+            action.Property(p => p.ToolName).HasMaxLength(50);
+            action.Property(p => p.Summary).HasMaxLength(500);
+            action.Property(p => p.Status).HasConversion<string>().HasMaxLength(20);
+            action.Property(p => p.ArgsJson).HasColumnType("jsonb");
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(record =>
+        {
+            record.ToTable("idempotency_keys");
+            record.HasKey(r => r.Id);
+
+            // Unique per user, so a duplicate is refused by the database rather than by whichever
+            // request happened to check first.
+            record.HasIndex(r => new { r.UserId, r.Key }).IsUnique();
+            record.Property(r => r.Key).HasMaxLength(100);
+            record.Property(r => r.Operation).HasMaxLength(200);
+            record.Property(r => r.ResponseJson).HasColumnType("jsonb");
         });
 
         // Identifiers are created in the domain, never by the database. Saying so explicitly also

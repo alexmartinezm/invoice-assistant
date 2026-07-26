@@ -1,5 +1,6 @@
 using System.ClientModel;
 using Api.Assistant.Tools;
+using Api.Infrastructure;
 using Azure.AI.OpenAI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
@@ -12,15 +13,27 @@ public sealed record AssistantAvailability(bool IsConfigured, string Reason);
 
 public static class ChatClientRegistration
 {
-    public static IServiceCollection AddAssistant(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddAssistant(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        IHostEnvironment environment)
     {
         services.Configure<AssistantOptions>(configuration.GetSection(AssistantOptions.SectionName));
         services.Configure<AiOptions>(configuration.GetSection(AiOptions.SectionName));
 
         services.AddSingleton<SystemPromptProvider>();
         services.AddScoped<ReadTools>();
+        services.AddScoped<WriteTools>();
         services.AddScoped<ToolCatalog>();
         services.AddScoped<ChatOrchestrator>();
+
+        // Loaded here rather than lazily on first use so a malformed policy file stops the app at
+        // startup. A security rule that only fails when someone tries to use it is not a rule.
+        var policy = LoadPolicy(configuration, environment);
+        services.AddSingleton(policy);
+        services.AddScoped<ToolPolicyEngine>();
+        services.AddScoped<ToolGate>();
+        services.AddScoped<TurnJournal>();
 
         services.AddTransient<ForwardCallerIdentityHandler>();
         services.AddHttpClient<SelfApiClient>((provider, client) =>
@@ -36,7 +49,6 @@ public static class ChatClientRegistration
             .AddHttpMessageHandler<ForwardCallerIdentityHandler>();
 
         var ai = configuration.GetSection(AiOptions.SectionName).Get<AiOptions>() ?? new AiOptions();
-        var assistant = configuration.GetSection(AssistantOptions.SectionName).Get<AssistantOptions>() ?? new AssistantOptions();
 
         // A tool that throws unexpectedly reaches the model as a bare "function failed" unless
         // detailed errors are on, which makes a broken tool very hard to debug. On in development,
@@ -47,11 +59,25 @@ public static class ChatClientRegistration
         services.AddChatClient(provider => BuildChatClient(ai, provider))
             .UseFunctionInvocation(configure: client =>
             {
-                client.MaximumIterationsPerRequest = assistant.MaxToolCallsPerTurn;
+                // The loop brake, from policies.json like every other limit. It stops the model
+                // going round for ever; ToolGate is what refuses an individual call.
+                client.MaximumIterationsPerRequest = policy.Limits.MaxToolCallsPerTurn;
                 client.IncludeDetailedErrors = detailedToolErrors;
             });
 
         return services;
+    }
+
+    private static PolicyDocument LoadPolicy(IConfiguration configuration, IHostEnvironment environment)
+    {
+        const string relativePath = "policies.json";
+
+        var configured = configuration.GetSection(AssistantOptions.SectionName)[nameof(AssistantOptions.PolicyPath)];
+        var path = RepositoryFile.Find(configured, relativePath, environment.ContentRootPath)
+            ?? throw new PolicyConfigurationException(
+                $"Could not find '{relativePath}'. Set Assistant:PolicyPath to point at it.");
+
+        return PolicyDocument.Load(path);
     }
 
     private static AssistantAvailability DescribeAvailability(AiOptions ai) => ai.Provider switch

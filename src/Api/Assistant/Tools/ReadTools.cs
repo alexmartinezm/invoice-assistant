@@ -17,8 +17,13 @@ namespace Api.Assistant.Tools;
 /// Optional parameters carry a default so the generated schema marks them optional. Without it the
 /// model has to send every filter on every call, and omitting one fails argument binding.
 /// </para>
+/// <para>
+/// Reads go through <see cref="ToolGate"/> as well. Nothing here changes anything, but the gate is
+/// what counts calls against the per-turn ceiling, and it is what makes <c>defaults.read</c> in
+/// <c>policies.json</c> a real setting rather than decoration.
+/// </para>
 /// </remarks>
-public sealed class ReadTools(SelfApiClient api)
+public sealed class ReadTools(ToolGate gate)
 {
     [Description(
         "Lists invoices with optional filters. Use overdue_only to find invoices past their due date. "
@@ -44,28 +49,61 @@ public sealed class ReadTools(SelfApiClient api)
             .Add("from", from)
             .Add("to", to);
 
-        return api.GetJsonAsync($"/api/invoices{query}", cancellationToken);
+        return Read(
+            ReadToolCatalog.ListInvoices,
+            new { status, customer_name, overdue_only, from, to },
+            "List invoices",
+            $"/api/invoices{query}",
+            cancellationToken);
     }
 
     [Description("Returns one invoice in full, including its lines and totals.")]
     public Task<JsonElement> GetInvoiceAsync(
         [Description("Invoice number in yyyy-nnnn form, for example 2026-0041.")]
         string number,
-        CancellationToken cancellationToken) =>
-        api.GetJsonAsync($"/api/invoices/{Uri.EscapeDataString(number)}", cancellationToken);
+        CancellationToken cancellationToken = default) =>
+        Read(
+            ReadToolCatalog.GetInvoice,
+            new { number },
+            $"Open invoice {number}",
+            $"/api/invoices/{Uri.EscapeDataString(number)}",
+            cancellationToken);
 
     [Description("Searches customers by name, tax id or email.")]
     public Task<JsonElement> SearchCustomersAsync(
         [Description("Search text; matches partially and ignores case.")]
         string query,
-        CancellationToken cancellationToken) =>
-        api.GetJsonAsync($"/api/customers{new ToolQuery().Add("query", query)}", cancellationToken);
+        CancellationToken cancellationToken = default) =>
+        Read(
+            ReadToolCatalog.SearchCustomers,
+            new { query },
+            $"Search customers for '{query}'",
+            $"/api/customers{new ToolQuery().Add("query", query)}",
+            cancellationToken);
 
     [Description(
         "Returns outstanding receivables broken down into aging buckets (current, 1-30, 31-60, over 60 days), "
         + "already totalled by the server. Use this for any question about how much is owed.")]
-    public Task<JsonElement> GetReceivablesSummaryAsync(CancellationToken cancellationToken) =>
-        api.GetJsonAsync("/api/reports/receivables", cancellationToken);
+    public Task<JsonElement> GetReceivablesSummaryAsync(CancellationToken cancellationToken = default) =>
+        Read(
+            ReadToolCatalog.GetReceivablesSummary,
+            new { },
+            "Read the receivables summary",
+            "/api/reports/receivables",
+            cancellationToken);
+
+    private Task<JsonElement> Read(
+        ToolIdentity tool,
+        object arguments,
+        string summary,
+        string url,
+        CancellationToken cancellationToken) =>
+        gate.RunAsync(
+            tool,
+            arguments,
+            _ => Task.FromResult(summary),
+            new ToolCall(HttpMethod.Get, url),
+            cancellationToken);
 
     /// <summary>Builds a query string, skipping the parameters the model chose not to send.</summary>
     private sealed class ToolQuery
@@ -89,4 +127,28 @@ public sealed class ReadTools(SelfApiClient api)
             return this;
         }
     }
+}
+
+/// <summary>
+/// The read tools' identities, alongside <see cref="WriteToolCatalog"/> and for the same reason:
+/// the gate has to know what it is evaluating without depending on the catalog that builds it.
+/// </summary>
+public static class ReadToolCatalog
+{
+    public static readonly ToolIdentity ListInvoices =
+        new("list_invoices", ToolSideEffect.Read, Domain.Role.Viewer);
+
+    public static readonly ToolIdentity GetInvoice =
+        new("get_invoice", ToolSideEffect.Read, Domain.Role.Viewer);
+
+    public static readonly ToolIdentity SearchCustomers =
+        new("search_customers", ToolSideEffect.Read, Domain.Role.Viewer);
+
+    public static readonly ToolIdentity GetReceivablesSummary =
+        new("get_receivables_summary", ToolSideEffect.Read, Domain.Role.Viewer);
+
+    public static readonly IReadOnlyList<ToolIdentity> All =
+    [
+        ListInvoices, GetInvoice, SearchCustomers, GetReceivablesSummary,
+    ];
 }

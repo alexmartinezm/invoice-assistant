@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useSession } from '../auth/useAuth';
+import { ApprovalCard } from './ApprovalCard';
+import { BlockCard } from './BlockCard';
 import { useChatStream, type ChatItem, type ToolRun } from './useChatStream';
 
 const suggestions = [
@@ -12,7 +14,7 @@ const suggestions = [
 
 export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { session } = useSession();
-  const { items, streaming, traceId, send, reset } = useChatStream(session.accessToken);
+  const { items, streaming, traceId, send, decide, reset } = useChatStream(session.accessToken);
   const [draft, setDraft] = useState('');
   const transcript = useRef<HTMLDivElement>(null);
 
@@ -58,7 +60,9 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
         {items.length === 0 ? (
           <EmptyState onPick={submit} />
         ) : (
-          items.map((item, index) => <Turn key={index} item={item} streaming={streaming} />)
+          items.map((item, index) => (
+            <Turn key={index} item={item} streaming={streaming} onDecide={decide} />
+          ))
         )}
       </div>
 
@@ -128,7 +132,15 @@ function EmptyState({ onPick }: { onPick: (message: string) => void }) {
   );
 }
 
-function Turn({ item, streaming }: { item: ChatItem; streaming: boolean }) {
+function Turn({
+  item,
+  streaming,
+  onDecide,
+}: {
+  item: ChatItem;
+  streaming: boolean;
+  onDecide: (actionId: string, decision: 'approve' | 'reject') => void;
+}) {
   if (item.kind === 'user') {
     return (
       <p className="bg-sunken border-rule ml-8 rounded-lg border px-3 py-2 text-sm">{item.text}</p>
@@ -159,6 +171,16 @@ function Turn({ item, streaming }: { item: ChatItem; streaming: boolean }) {
       )}
 
       {awaitingFirstToken && <p className="caret text-ink-faint text-sm" />}
+
+      {/* After the answer, not before it: the assistant says what it is proposing, and the card
+          is what the user acts on. */}
+      {item.blocks.map((block, index) => (
+        <BlockCard key={`${block.tool}-${index}`} tool={block.tool} reason={block.reason} />
+      ))}
+
+      {item.approvals.map((approval) => (
+        <ApprovalCard key={approval.actionId} approval={approval} onDecide={onDecide} />
+      ))}
 
       {item.failure && (
         <p role="alert" className="border-danger text-danger rounded-md border px-3 py-2 text-sm">

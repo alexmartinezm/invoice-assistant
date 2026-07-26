@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Api.Assistant;
 using Api.Assistant.Tools;
+using Api.Domain;
 using Api.Infrastructure;
 using Api.Tests.Support;
 using Microsoft.EntityFrameworkCore;
@@ -71,23 +72,45 @@ public class AssistantTurnTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
     /// <summary>
     /// The capability boundary: what the assistant can do is the length of this list, not the
-    /// wording of the prompt. F2 adds write tools; until then there is nothing to gate.
+    /// wording of the prompt.
     /// </summary>
+    /// <remarks>
+    /// Until F2 this asserted that every tool was a read. Now that writes exist the boundary is
+    /// stated as what is still missing: nothing deletes, nothing acts on more than one named
+    /// invoice, and nothing touches users, roles or configuration. Those are the capabilities a
+    /// prompt injection would need, and they are absent from the catalog rather than discouraged.
+    /// </remarks>
     [Fact]
-    public async Task The_model_is_only_ever_offered_the_read_tools()
+    public async Task The_model_is_only_ever_offered_the_declared_catalog()
     {
         factory.Model.Script([new TextContent("Nothing to do.")]);
 
         using var client = await factory.ClientForAsync("ana@demo");
         await ChatAsync(client, "hello");
 
-        Assert.Equal(
-            ["list_invoices", "get_invoice", "search_customers", "get_receivables_summary"],
-            factory.Model.OfferedTools.OfType<AIFunction>().Select(tool => tool.Name));
+        string[] expected =
+        [
+            "list_invoices", "get_invoice", "search_customers", "get_receivables_summary",
+            "create_draft_invoice", "send_invoice", "mark_invoice_paid", "cancel_invoice", "update_due_date",
+        ];
+
+        Assert.Equal(expected, factory.Model.OfferedTools.OfType<AIFunction>().Select(tool => tool.Name));
 
         using var scope = factory.Services.CreateScope();
         var catalog = scope.ServiceProvider.GetRequiredService<ToolCatalog>();
-        Assert.All(catalog.Tools, tool => Assert.Equal(ToolSideEffect.Read, tool.SideEffect));
+
+        Assert.DoesNotContain(catalog.Tools, tool =>
+            tool.Name.Contains("delete", StringComparison.OrdinalIgnoreCase)
+            || tool.Name.Contains("bulk", StringComparison.OrdinalIgnoreCase)
+            || tool.Name.Contains("all", StringComparison.OrdinalIgnoreCase)
+            || tool.Name.Contains("user", StringComparison.OrdinalIgnoreCase)
+            || tool.Name.Contains("role", StringComparison.OrdinalIgnoreCase)
+            || tool.Name.Contains("config", StringComparison.OrdinalIgnoreCase));
+
+        // Every write is reachable only through the gate, so none of them can be a bare Viewer call.
+        Assert.All(
+            catalog.Tools.Where(tool => tool.SideEffect is ToolSideEffect.Write),
+            tool => Assert.True(tool.RequiredRole >= Role.Accountant, tool.Name));
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using Api.Assistant;
 using Api.Assistant.Tools;
 using Api.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
@@ -22,6 +23,11 @@ namespace Api.Tests.Support;
 public class ApiFactory : WebApplicationFactory<Program>
 {
     private const string DemoPassword = DatabaseSeeder.DemoPassword;
+
+    /// <summary>The repository's real <c>policies.json</c> — the tests gate on what ships.</summary>
+    public static readonly PolicyDocument Policy = PolicyDocument.Load(
+        RepositoryFile.Find(configured: null, "policies.json", AppContext.BaseDirectory)
+        ?? throw new FileNotFoundException("Could not find policies.json from the test binaries."));
 
     private readonly string _databaseName = $"invoice_assistant_test_{Guid.NewGuid():N}";
     private readonly string _adminConnectionString;
@@ -99,7 +105,15 @@ public class ApiFactory : WebApplicationFactory<Program>
             services.Replace(ServiceDescriptor.Singleton(Clock));
 
             services.RemoveAll<IChatClient>();
-            services.AddChatClient(Model).UseFunctionInvocation();
+
+            // The same configure callback the app applies. Without it the iteration cap is the
+            // framework default, and every per-turn limit test would pass for the wrong reason.
+            services.AddChatClient(Model).UseFunctionInvocation(configure: client =>
+            {
+                client.MaximumIterationsPerRequest = Policy.Limits.MaxToolCallsPerTurn;
+                client.IncludeDetailedErrors = true;
+            });
+
             services.Replace(ServiceDescriptor.Singleton(
                 new Api.Assistant.AssistantAvailability(IsConfigured: true, Reason: string.Empty)));
 

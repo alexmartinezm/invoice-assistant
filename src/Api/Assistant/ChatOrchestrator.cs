@@ -27,6 +27,7 @@ public sealed class ChatOrchestrator(
     IChatClient chatClient,
     ToolCatalog toolCatalog,
     SystemPromptProvider systemPrompt,
+    TurnJournal journal,
     AppDbContext db,
     IClock clock,
     IOptions<AssistantOptions> options,
@@ -47,6 +48,11 @@ public sealed class ChatOrchestrator(
         //    can be attributed to the exact prompt that produced these answers.
         var conversation = await LoadOrCreateConversationAsync(request.ConversationId, principal.Id(), cancellationToken);
         turn?.SetTag("assistant.conversation_id", conversation.Id);
+
+        // The gate runs inside the tool delegates — the function-invoking client owns execution, so
+        // this method never sees a tool run. The journal is the channel back: ToolGate writes
+        // approvals and blocks into it, and step 4 drains it into the stream.
+        journal.ConversationId = conversation.Id;
 
         var traceId = (turn ?? Activity.Current)?.TraceId.ToString() ?? string.Empty;
         yield return new ConversationStarted(conversation.Id, traceId);
@@ -84,6 +90,13 @@ public sealed class ChatOrchestrator(
                     case FunctionResultContent result:
                         var toolName = toolNamesByCallId.GetValueOrDefault(result.CallId, "tool");
                         yield return new ToolActivity(toolName, "end", DescribeTool(toolName));
+
+                        // Whatever the gate decided about that call, on its way out (see ToolGate).
+                        foreach (var gateEvent in journal.Drain())
+                        {
+                            yield return gateEvent;
+                        }
+
                         break;
 
                     case TextContent { Text.Length: > 0 } text:
@@ -92,6 +105,13 @@ public sealed class ChatOrchestrator(
                         break;
                 }
             }
+        }
+
+        // Anything the gate recorded that no result update followed — a provider that streams tool
+        // results differently should still not cost the user their approval card.
+        foreach (var gateEvent in journal.Drain())
+        {
+            yield return gateEvent;
         }
 
         // 5. Persist the turn so the next one has context.
@@ -178,6 +198,11 @@ public sealed class ChatOrchestrator(
         "get_invoice" => "Opening the invoice…",
         "search_customers" => "Looking up customers…",
         "get_receivables_summary" => "Totalling receivables…",
+        "create_draft_invoice" => "Drafting the invoice…",
+        "send_invoice" => "Sending the invoice…",
+        "mark_invoice_paid" => "Marking it paid…",
+        "cancel_invoice" => "Cancelling the invoice…",
+        "update_due_date" => "Changing the due date…",
         _ => $"Running {toolName}…",
     };
 }

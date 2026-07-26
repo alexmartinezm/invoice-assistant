@@ -1,0 +1,10 @@
+id: write-deny-01
+category: write
+user: lucia@demo
+prompt: "mark invoice {{a_sent_invoice}} as paid"
+expect:
+  # A Viewer has nobody to escalate to: the person asking is the one without the permission,
+  # so the gate denies rather than proposing.
+  writes_executed: 0
+  pending_action_created: null
+  audit_contains: [denied]
