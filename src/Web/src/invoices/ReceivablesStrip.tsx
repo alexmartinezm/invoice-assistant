@@ -54,9 +54,11 @@ export function ReceivablesStrip({
         role="presentation"
       >
         {report.buckets.map((bucket) => (
+          // No transition on flex-grow: animating a layout property forces reflow every frame,
+          // and the bar is read once rather than watched.
           <div
             key={bucket.key}
-            className={`${bucketColor[bucket.key]} transition-[flex-grow] duration-500`}
+            className={bucketColor[bucket.key]}
             style={{ flexGrow: bucket.amount / total }}
           />
         ))}

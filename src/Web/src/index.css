@@ -16,9 +16,14 @@
   --paper: #faf7f2;
   --paper-raised: #fffdfa;
   --paper-sunken: #f2ede4;
+  /*
+    Three text tiers, each clearing WCAG 4.5:1 against all three surfaces and spaced far enough
+    apart to still read as a hierarchy: roughly 16:1 / 7.5:1 / 5:1. The faint tier carries
+    metadata at 11-12px, which is body size — "decorative" is not an exemption from contrast.
+  */
   --ink: #1a1714;
-  --ink-soft: #6b6259;
-  --ink-faint: #9a9086;
+  --ink-soft: #554e47;
+  --ink-faint: #706962;
   --rule: #e3dcd1;
   --rule-strong: #cec5b7;
 
@@ -28,7 +33,7 @@
 
   /* A data scale, reserved for how late money is. Never borrowed for a general-purpose red. */
   --aging-current: #0f6b5c;
-  --aging-30: #b0730d;
+  --aging-30: #925f0b;
   --aging-60: #bd5518;
   --aging-over: #a3311d;
 
@@ -45,8 +50,8 @@
     --paper-raised: #1d1a15;
     --paper-sunken: #100e0b;
     --ink: #ece7de;
-    --ink-soft: #a49a8d;
-    --ink-faint: #6f665b;
+    --ink-soft: #ada498;
+    --ink-faint: #8a837a;
     --rule: #2e2a23;
     --rule-strong: #423c32;
 
@@ -95,6 +100,37 @@
 @layer base {
   html {
     color-scheme: light dark;
+  }
+
+  /*
+    The chat drawer sits off-canvas below `lg`, and a translated fixed element still extends the
+    page's scroll area. `clip` rather than `hidden` so `position: sticky` keeps working on
+    descendants — the header depends on it.
+  */
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  /* Long compound words in display type break inside the word instead of overflowing at 320px. */
+  h1,
+  h2,
+  h3 {
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  /*
+    The press and disabled states, once, rather than as utilities repeated at every call site.
+    A button needs all of default / hover / focus-visible / active / disabled to feel finished,
+    and disabled has to signal through the cursor as well as through opacity.
+  */
+  button:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
+  button:disabled {
+    cursor: not-allowed;
   }
 
   body {

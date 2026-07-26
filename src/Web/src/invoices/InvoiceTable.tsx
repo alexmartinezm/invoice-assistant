@@ -20,8 +20,10 @@ export function InvoiceTable({
   }
 
   return (
-    <div className="card overflow-hidden">
-      <table className="w-full border-collapse text-sm">
+    // Scrolls inside its own card on narrow viewports. Clipping instead would put the Total
+    // column permanently out of reach on a phone.
+    <div className="card overflow-x-auto">
+      <table className="w-full min-w-2xl border-collapse text-sm">
         <caption className="sr-only">Invoices matching the current filters</caption>
         <thead>
           <tr className="border-rule bg-sunken text-ink-faint border-b text-left font-mono text-[11px] tracking-wider uppercase">
@@ -54,9 +56,11 @@ export function InvoiceTable({
               style={{ animationDelay: `${Math.min(index, 20) * 18}ms` }}
             >
               <td className="px-4 py-2.5">
+                {/* nowrap: the hyphen in 2026-0001 is a break opportunity, and an invoice
+                    number split across two lines reads as a rendering bug. */}
                 <button
                   type="button"
-                  className="numeric text-accent-ink text-left"
+                  className="numeric text-accent-ink text-left whitespace-nowrap"
                   aria-current={selectedNumber === invoice.number}
                 >
                   {invoice.number}

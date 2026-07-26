@@ -35,7 +35,7 @@ Invariants that must never be broken:
 - `src/Api/Features/` — business vertical slices: Invoices, Customers, Reports, Auth.
 - `src/Api/Assistant/` — ChatOrchestrator, Tools/, ChatEndpoints (ToolPolicyEngine in F2, UsageCollector in F4).
 - `src/Api/Infrastructure/` — EF Core, migrations, seed, telemetry, configuration.
-- `src/Web/` — React SPA. Its design language is written down in `.claude/skills/ui-design/SKILL.md`: read it before changing anything visible, whatever client you are. The look is committed, not up for reinvention per session.
+- `src/Web/` — React SPA. Its design language is written down in `.claude/skills/ui-design/SKILL.md`: read it before changing anything visible, whatever client you are. The look is committed, not up for reinvention per session. `.claude/skills/hallmark/` is a vendored third-party design skill (MIT) whose gates are the check on that work — contrast, mobile widths, interaction states.
 - `tests/Api.Tests/` — domain unit tests plus integration tests booting the real app against a throwaway PostgreSQL database.
 - `prompts/system.md` — versioned system prompt; its hash is recorded per conversation.
 - `policies.json` — write gate rules, structured, no DSL.

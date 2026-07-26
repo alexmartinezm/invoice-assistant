@@ -15,8 +15,10 @@ export function InvoiceFilterBar({
     <div className="flex flex-wrap items-center gap-3">
       {/* Statuses are the four persisted ones; "overdue" is a separate toggle because it is
           derived from the due date, not a state an invoice can be in. */}
+      {/* Scrolls rather than clips: five statuses do not fit at 320px, and a filter you cannot
+          reach is worse than one you have to swipe to. */}
       <div
-        className="border-rule bg-raised flex overflow-hidden rounded-md border"
+        className="border-rule bg-raised flex max-w-full overflow-x-auto rounded-md border"
         role="group"
         aria-label="Filter by status"
       >
@@ -26,7 +28,7 @@ export function InvoiceFilterBar({
             type="button"
             onClick={() => onChange({ ...filters, status })}
             aria-pressed={filters.status === status}
-            className={`border-rule px-3 py-1.5 text-sm transition-colors not-first:border-l ${
+            className={`border-rule shrink-0 px-3 py-1.5 text-sm whitespace-nowrap transition-colors not-first:border-l ${
               filters.status === status ? 'bg-accent text-paper' : 'hover:bg-sunken text-ink-soft'
             }`}
           >

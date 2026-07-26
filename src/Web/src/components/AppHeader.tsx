@@ -8,32 +8,39 @@ export function AppHeader({ onOpenChat }: { onOpenChat: () => void }) {
 
   return (
     <header className="border-rule bg-paper/85 sticky top-0 z-20 border-b backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-3">
-        <span className="font-display text-lg tracking-tight">invoice-assistant</span>
+      <div className="mx-auto flex max-w-7xl items-center gap-2 px-4 py-3 sm:gap-4 sm:px-6">
+        {/* The wordmark is the element that yields when the row is tight — the role badge and the
+            drawer trigger are functional, a logo is not. */}
+        <span className="font-display min-w-0 truncate text-base tracking-tight sm:text-lg">
+          invoice-assistant
+        </span>
         <span className="text-ink-faint hidden font-mono text-xs sm:inline">/ receivables</span>
 
         <div className="flex-1" />
 
+        {/* Short enough to stay on one line at 320px: a wrapped CTA label reads as broken. */}
         <button
           type="button"
           onClick={onOpenChat}
-          className="border-accent text-accent-ink bg-accent-soft hover:bg-accent hover:text-paper rounded-md border px-3 py-1.5 text-sm font-medium transition-colors lg:hidden"
+          className="border-accent text-accent-ink bg-accent-soft hover:bg-accent hover:text-paper shrink-0 rounded-md border px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors lg:hidden"
         >
-          Ask the assistant
+          Assistant
         </button>
 
         {/*
           The token is on display on purpose: it is the thing the assistant's tools carry, and
           seeing the role claim inside it is what makes "propagated identity" concrete.
         */}
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             type="button"
             onClick={() => setShowToken((open) => !open)}
             aria-expanded={showToken}
             className="hover:bg-sunken flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors"
           >
-            <span className="text-right text-sm leading-tight">
+            {/* Below sm the badge alone identifies the session; the name would push the role
+                past the viewport edge, and the role is the part that matters here. */}
+            <span className="hidden text-right text-sm leading-tight sm:block">
               <span className="block font-medium">{session.user.displayName}</span>
               <span className="text-ink-faint block font-mono text-[11px]">
                 {session.user.email}

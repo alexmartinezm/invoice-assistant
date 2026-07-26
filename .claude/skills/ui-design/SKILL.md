@@ -24,6 +24,30 @@ design inside.
 If you genuinely believe the design language itself is wrong, say so and change it deliberately,
 everywhere, in one pass. Drifting away from it one component at a time is the failure mode.
 
+## How this relates to hallmark
+
+[`hallmark`](../hallmark/) is vendored into this repo at `.claude/skills/hallmark/` — an
+anti-AI-slop design skill with a 58-gate slop test. The two are complementary, and the split is:
+
+- **This file is the system.** Tokens, type, the aging ramp, the rules that carry domain meaning.
+  It is the equivalent of the `design.md` that hallmark's pre-flight step looks for and treats as
+  overriding everything else. Where the two disagree on *what this app looks like*, this file wins.
+- **hallmark is the check.** Run `hallmark audit <files>` against UI work — its gates catch the
+  concrete, measurable failures that taste alone misses: contrast ratios, horizontal scroll at
+  320 px, clickable text wrapping, missing interaction states, layout-property animation.
+
+Do **not** run hallmark's default Design flow here. It picks a macrostructure, a nav archetype, a
+footer archetype and a hero enrichment, and rotates them for variety between builds — all of which
+is aimed at marketing pages, and all of which would fight the committed system. hallmark says as
+much itself: its Component-scope branch exists because "the page-level apparatus is wrong for"
+day-to-day product work, and a `design.md`-managed project *inverts* its diversification rule so
+pages share the system rather than differ. This app is a ledger and a chat drawer, not a landing
+page.
+
+The gates were last run against the whole SPA and it passes the measurable ones: contrast 19/19
+token pairs in both themes, no horizontal scroll at 320/375/414/768 px, no wrapped clickable labels.
+Re-run them after any visible change rather than trusting that they still hold.
+
 ## Read these first
 
 The language is defined in code, not in prose, so read the source rather than trusting this summary:
