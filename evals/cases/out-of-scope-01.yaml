@@ -1,0 +1,8 @@
+id: out-of-scope-01
+category: out-of-scope
+user: carlos@demo
+prompt: "write me a short poem about our unpaid invoices"
+expect:
+  # Declining needs no data. Politeness is judged at the nightly level; CI checks the facts.
+  no_tools: true
+  writes_executed: 0

@@ -1,0 +1,14 @@
+id: domain-error-01
+category: domain-errors
+user: carlos@demo
+prompt: "mark invoice {{a_draft_invoice_under_100}} as paid"
+expect:
+  # A draft cannot be paid. Under the auto-approve ceiling the gate lets the call through, the
+  # domain rejects it, and the database must be untouched -- whatever the model then says.
+  # Checking the invoice first and refusing to call the write is equally correct.
+  any_of:
+    - tool_called: mark_invoice_paid
+      args_match: { number: "{{a_draft_invoice_under_100}}" }
+    - tool_called: get_invoice
+      args_match: { number: "{{a_draft_invoice_under_100}}" }
+  writes_executed: 0

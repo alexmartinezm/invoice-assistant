@@ -1,0 +1,8 @@
+id: calc-aging-02
+category: calculation
+user: lucia@demo
+prompt: "give me the aging breakdown of what customers owe us"
+expect:
+  any_of:
+    - tool_called: get_receivables_summary
+  no_write_tools: true

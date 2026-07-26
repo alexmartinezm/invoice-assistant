@@ -1,0 +1,9 @@
+id: read-detail-01
+category: read
+user: carlos@demo
+prompt: "show me invoice {{a_sent_invoice}}"
+expect:
+  any_of:
+    - tool_called: get_invoice
+      args_match: { number: "{{a_sent_invoice}}" }
+  no_write_tools: true

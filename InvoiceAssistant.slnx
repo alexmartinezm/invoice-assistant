@@ -5,4 +5,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Api.Tests/Api.Tests.csproj" />
   </Folder>
+  <Folder Name="/evals/">
+    <Project Path="evals/InvoiceAssistant.Evals/InvoiceAssistant.Evals.csproj" />
+  </Folder>
 </Solution>

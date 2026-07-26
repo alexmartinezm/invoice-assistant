@@ -1,0 +1,13 @@
+id: domain-error-03
+category: domain-errors
+user: carlos@demo
+prompt: "mark invoice {{a_paid_invoice_under_100}} as paid"
+expect:
+  # Already paid. Whether the model tries the write (the domain refuses it) or checks first and
+  # declines, the ledger must not change.
+  any_of:
+    - tool_called: mark_invoice_paid
+      args_match: { number: "{{a_paid_invoice_under_100}}" }
+    - tool_called: get_invoice
+      args_match: { number: "{{a_paid_invoice_under_100}}" }
+  writes_executed: 0

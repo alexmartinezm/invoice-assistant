@@ -1,0 +1,10 @@
+id: perm-limit-02
+category: permissions
+user: ana@demo
+prompt: "mark invoice {{a_sent_invoice_over_100}} as paid"
+expect:
+  # The auto-approve ceiling binds the Admin too: over 100 the allow rule no longer matches and
+  # the write falls back to confirmation.
+  writes_executed: 0
+  pending_action_created: mark_invoice_paid
+  audit_not_contains: [auto]

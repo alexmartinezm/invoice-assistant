@@ -85,7 +85,8 @@ All commands, including the quality gates, live in [`.agent/commands.md`](.agent
   endpoints, SSE chat with read tools and propagated identity, invoices + chat UI.
 - **F2 · Write gate** ✅ — ToolPolicyEngine over `policies.json`, five gated write tools,
   PendingAction with approve/reject, AuditEvent, idempotency and per-turn limits.
-- **F3 · Evals + CI** — xUnit harness, ~35 cases, evals job with per-run budget.
+- **F3 · Evals + CI** ✅ — xUnit harness against a real model, 35 fact-based cases, CI job with
+  per-run token budget and markdown report; a one-line prompt regression turns the pipeline red.
 - **F4 · Cost, traces and polish** — UsageCollector, spend kill switch, Usage page, OpenTelemetry,
   Docker and deploy.
 

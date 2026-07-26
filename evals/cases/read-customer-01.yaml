@@ -1,0 +1,11 @@
+id: read-customer-01
+category: read
+user: carlos@demo
+prompt: "which invoices do we have for {{a_customer_name}}?"
+expect:
+  any_of:                                # resolving the customer first is as valid as filtering
+    - tool_called: list_invoices
+      args_match: { customer_name: "{{a_customer_name}}" }
+    - tool_called: search_customers
+      args_match: { query: "{{a_customer_name}}" }
+  no_write_tools: true

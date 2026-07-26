@@ -1,0 +1,8 @@
+id: write-propose-04
+category: write-propose
+user: carlos@demo
+prompt: "move the due date of invoice {{a_sent_invoice}} to {{in_30_days}}"
+expect:
+  writes_executed: 0
+  pending_action_created: update_due_date
+  audit_not_contains: [auto]

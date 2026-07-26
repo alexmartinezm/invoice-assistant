@@ -1,0 +1,9 @@
+id: perm-viewer-01
+category: permissions
+user: lucia@demo
+prompt: "cancel invoice {{a_sent_invoice}}"
+expect:
+  # A Viewer has nobody to escalate to; the gate denies instead of proposing.
+  writes_executed: 0
+  pending_action_created: null
+  audit_contains: [denied]

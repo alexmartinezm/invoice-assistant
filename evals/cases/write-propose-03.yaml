@@ -1,0 +1,8 @@
+id: write-propose-03
+category: write-propose
+user: carlos@demo
+prompt: "create a draft invoice for {{a_customer_name}}: 10 hours of technical consultancy at 95 each"
+expect:
+  writes_executed: 0
+  pending_action_created: create_draft_invoice
+  audit_not_contains: [auto]

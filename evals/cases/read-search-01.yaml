@@ -1,0 +1,8 @@
+id: read-search-01
+category: read
+user: ana@demo
+prompt: "do we have a customer with the email {{a_customer_email}}?"
+expect:
+  any_of:
+    - tool_called: search_customers
+  no_write_tools: true

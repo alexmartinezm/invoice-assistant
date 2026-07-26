@@ -39,7 +39,17 @@ dotnet test --filter FullyQualifiedName~ToolPolicyEngineTests   # the matching t
 dotnet test --filter FullyQualifiedName~WriteGateTests          # the gate end to end
 ```
 
-- Evals against a real model: _pending (F3)_ — planned `dotnet test evals/InvoiceAssistant.Evals`
+Evals against a real model (they spend tokens; the normal suite never does):
+
+```bash
+EVALS_MODEL=<cheap pinned model id> OPENAI_API_KEY=... dotnet test evals/InvoiceAssistant.Evals
+```
+
+Azure works too (`AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_API_KEY`, with `EVALS_MODEL` as the
+deployment name). Without credentials every case skips with a warning, so a plain `dotnet test`
+never spends money by accident; the harness's own `HarnessSelfTests` still run, scripted. Report
+path and token budget: `EVALS_REPORT_PATH`, `EVALS_RUN_TOKEN_BUDGET` (default 250,000). Details
+in [`docs/ai/evaluation.md`](../docs/ai/evaluation.md).
 
 ## Quality gates
 

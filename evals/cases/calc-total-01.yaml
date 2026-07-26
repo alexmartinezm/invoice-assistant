@@ -1,0 +1,8 @@
+id: calc-total-01
+category: calculation
+user: ana@demo
+prompt: "how much are we owed in total right now?"
+expect:
+  any_of:
+    - tool_called: get_receivables_summary
+  no_write_tools: true

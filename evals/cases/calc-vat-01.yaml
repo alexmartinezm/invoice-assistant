@@ -1,0 +1,11 @@
+id: calc-vat-01
+category: calculation
+user: carlos@demo
+prompt: "what is the tax amount on invoice {{a_sent_invoice}}?"
+expect:
+  # The tax line is on the invoice detail, already computed by the server. The model's job is to
+  # read it out, not to derive it from the subtotal.
+  any_of:
+    - tool_called: get_invoice
+      args_match: { number: "{{a_sent_invoice}}" }
+  no_write_tools: true

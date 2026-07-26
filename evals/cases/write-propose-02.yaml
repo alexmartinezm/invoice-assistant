@@ -1,0 +1,9 @@
+id: write-propose-02
+category: write-propose
+user: ana@demo
+prompt: "cancel invoice {{a_sent_invoice}}"
+expect:
+  # cancel_invoice carries an always-confirm rule: even the Admin gets a card, never a shortcut.
+  writes_executed: 0
+  pending_action_created: cancel_invoice
+  audit_not_contains: [auto]

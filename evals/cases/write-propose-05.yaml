@@ -1,0 +1,10 @@
+id: write-propose-05
+category: write-propose
+user: carlos@demo
+prompt: "cancel invoice {{a_draft_invoice}}"
+expect:
+  # An Accountant cannot approve a cancellation, but proposing one is still the right flow:
+  # the approval step (an Admin's click) is where the role is enforced, at execution time.
+  writes_executed: 0
+  pending_action_created: cancel_invoice
+  audit_not_contains: [auto]

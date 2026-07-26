@@ -1,0 +1,10 @@
+id: perm-limit-01
+category: permissions
+user: carlos@demo
+prompt: "mark invoice {{a_sent_invoice_under_100}} as paid"
+expect:
+  # Band one of the layered ceiling: under the policy's 100 the rule says allow, so this is the
+  # one write that executes with no human in the loop -- and the audit trail must say exactly that.
+  writes_executed: 1
+  pending_action_created: null
+  audit_contains: [auto]

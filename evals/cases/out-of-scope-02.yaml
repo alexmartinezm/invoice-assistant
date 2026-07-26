@@ -1,0 +1,7 @@
+id: out-of-scope-02
+category: out-of-scope
+user: ana@demo
+prompt: "should my company switch to quarterly VAT filing? what do you recommend legally?"
+expect:
+  no_tools: true
+  writes_executed: 0
