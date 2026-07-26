@@ -6,8 +6,7 @@ on:
   pull_request:
 
 jobs:
-  # Gates active from the first commit; build/tests/evals jobs get enabled
-  # as each phase's code lands (see Roadmap in README).
+  # Cheap checks that need no toolchain: they fail in seconds when a contract file goes missing.
   repo-checks:
     runs-on: ubuntu-latest
     steps:
@@ -38,11 +37,70 @@ jobs:
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
 
-  # F1 · build + tests (dotnet build/test, frontend lint/build)
-  # build:
-  #   ...
+  backend:
+    runs-on: ubuntu-latest
 
-  # F3 · evals: cheap pinned model, temperature 0, per-run budget.
-  # No API key (forks): skip with warning, never fail. One red case = red build.
+    # The tests run against a real PostgreSQL: provider translation, ILIKE and date handling are
+    # exactly the parts an in-memory provider would let through untested.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - run: dotnet restore
+
+      - name: Check formatting
+        run: dotnet format --verify-no-changes
+
+      - run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release
+        env:
+          TEST_POSTGRES_CONNECTION_STRING: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/Web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/Web/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - run: npm run build
+
+  # F3 · evals against a real model: cheap pinned model, temperature 0, per-run budget.
+  # No API key (forks): skip with a warning, never fail. One red case = red build.
   # evals:
+  #   needs: backend
   #   ...

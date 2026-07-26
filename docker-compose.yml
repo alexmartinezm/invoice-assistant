@@ -1,0 +1,27 @@
+# Development database. PostgreSQL is the persistence engine (ADR 006), so it is the one piece of
+# infrastructure needed before `dotnet run` will start.
+#
+# F4 adds the app service and the multi-stage Dockerfile, at which point `docker compose up` alone
+# brings up the whole demo.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: invoice-assistant-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-invoice_assistant}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:

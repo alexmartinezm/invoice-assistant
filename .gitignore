@@ -12,10 +12,8 @@ node_modules/
 dist/
 *.local
 
-# SQLite
-*.db
-*.db-shm
-*.db-wal
+# The SPA build output: the Api serves it in production, it is never committed.
+src/Api/wwwroot/
 
 # IDE / OS
 .idea/
