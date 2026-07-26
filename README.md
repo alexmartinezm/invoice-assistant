@@ -33,26 +33,28 @@ The golden rule: **the system prompt can ask for good behavior; only the server 
 invoice-assistant/
 ├── AGENTS.md                     # Canonical contract for development agents
 ├── src/
-│   ├── Api/                      # .NET 9: domain, endpoints, assistant, gate, usage
+│   ├── Api/                      # .NET 10: domain, endpoints, assistant, gate, usage
 │   └── Web/                      # React 19 + Vite + TypeScript + Tailwind
+├── tests/Api.Tests/              # Domain unit tests + integration tests on real PostgreSQL
 ├── evals/
 │   ├── InvoiceAssistant.Evals/   # xUnit harness
 │   └── cases/                    # Declarative *.yaml cases
 ├── prompts/system.md             # Versioned system prompt (hash per conversation)
 ├── policies.json                 # Write gate: structured rules, no DSL
 ├── docs/                         # Architecture + ADRs
-└── .github/workflows/ci.yml      # build → tests → evals
+├── docker-compose.yml            # PostgreSQL for development
+└── .github/workflows/ci.yml      # repo checks → backend → frontend → evals
 ```
 
 ## Stack
 
 | Area | Decision |
 |---|---|
-| Backend | .NET 9, Minimal APIs, vertical slices |
+| Backend | .NET 10, Minimal APIs, vertical slices |
 | AI layer | `Microsoft.Extensions.AI` (`IChatClient`), no provider lock-in |
 | Provider | Azure OpenAI by default; fallback to any OpenAI-compatible endpoint via config |
-| Frontend | React 19 + Vite + TypeScript + Tailwind |
-| Persistence | SQLite + EF Core (WAL), automatic seed |
+| Frontend | React 19 + Vite + TypeScript + Tailwind 4 |
+| Persistence | PostgreSQL + EF Core, migrations and seed on startup |
 | Auth | Demo JWT with 3 roles: Admin, Accountant, Viewer |
 | Observability | OpenTelemetry (traces + metrics) |
 | CI | GitHub Actions: build + tests + evals |
@@ -60,19 +62,37 @@ invoice-assistant/
 
 ## Quick start
 
-> ⚠️ Under construction: the goal is `git clone` → `.env` with an API key → `docker compose up` → working demo with seed data in under 5 minutes. See [Roadmap](#roadmap).
-
 ```bash
-cp .env.example .env   # add your API key
-# docker compose up    # available once F4 lands
+cp .env.example .env             # optional: add an AI provider key
+docker compose up -d postgres    # PostgreSQL (ADR 006)
+
+dotnet run --project src/Api     # http://localhost:5080
+npm install --prefix src/Web && npm run dev --prefix src/Web
 ```
+
+Open http://localhost:5173 and pick one of the three demo users; the shared password is `demo1234`.
+Migrations and around 40 seeded invoices are applied on startup, so there is no database step.
+
+**Without an AI key** the ledger, filters and API all work; only `/api/chat` answers 503 telling you
+which variables it wants. That is deliberate — you can read and run the repo before signing up to a
+provider.
+
+All commands, including the quality gates, live in [`.agent/commands.md`](.agent/commands.md).
 
 ## Roadmap
 
-- **F1 · Skeleton + reads** — domain, seed, JWT auth, business endpoints, SSE chat with read tools and propagated identity, minimal UI.
-- **F2 · Write gate** — ToolPolicyEngine + `policies.json`, PendingAction, approve/reject, AuditEvent, idempotency and per-turn limits.
+- **F1 · Skeleton + reads** ✅ — domain with enforced transitions, seed, JWT auth, business
+  endpoints, SSE chat with read tools and propagated identity, invoices + chat UI.
+- **F2 · Write gate** — ToolPolicyEngine + `policies.json`, PendingAction, approve/reject,
+  AuditEvent, idempotency and per-turn limits.
 - **F3 · Evals + CI** — xUnit harness, ~35 cases, evals job with per-run budget.
-- **F4 · Cost, traces and polish** — UsageCollector, spend kill switch, Usage page, OpenTelemetry, Docker and deploy.
+- **F4 · Cost, traces and polish** — UsageCollector, spend kill switch, Usage page, OpenTelemetry,
+  Docker and deploy.
+
+Until F2 lands the assistant is read-only: the tool catalog contains four read tools and nothing
+else, which is also why the Viewer and the Admin see the same figures today. The roles already
+differ at the API — a Viewer is refused every write, an Accountant is capped at €1,000 — and that
+difference becomes visible in the chat as soon as write tools exist.
 
 **Out of scope for v1:** RAG, cross-session memory, multi-agent, real multi-tenancy, real legal invoicing (Verifactu, etc.), i18n. The invoicing app is a credible pretext, not a product.
 

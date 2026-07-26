@@ -1,0 +1,82 @@
+export type Role = 'Viewer' | 'Accountant' | 'Admin';
+
+export type InvoiceStatus = 'Draft' | 'Sent' | 'Paid' | 'Cancelled';
+
+export interface AuthenticatedUser {
+  email: string;
+  displayName: string;
+  role: Role;
+}
+
+export interface LoginResponse {
+  accessToken: string;
+  expiresAt: string;
+  user: AuthenticatedUser;
+}
+
+export interface InvoiceSummary {
+  number: string;
+  customerName: string;
+  status: InvoiceStatus;
+  isOverdue: boolean;
+  daysOverdue: number;
+  issueDate: string;
+  dueDate: string;
+  total: number;
+}
+
+export interface InvoiceLine {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  amount: number;
+}
+
+export interface InvoiceDetail extends InvoiceSummary {
+  customerId: string;
+  customerTaxId: string;
+  lines: InvoiceLine[];
+  subtotal: number;
+  vatRate: number;
+  vatAmount: number;
+  paidAt: string | null;
+}
+
+export interface InvoiceList {
+  asOf: string;
+  currency: string;
+  count: number;
+  invoices: InvoiceSummary[];
+}
+
+export type AgingBucketKey = 'current' | '1-30' | '31-60' | '60+';
+
+export interface AgingBucket {
+  key: AgingBucketKey;
+  label: string;
+  invoiceCount: number;
+  amount: number;
+}
+
+export interface ReceivablesReport {
+  asOf: string;
+  currency: string;
+  totalOutstanding: number;
+  totalOverdue: number;
+  invoiceCount: number;
+  buckets: AgingBucket[];
+}
+
+export interface InvoiceFilters {
+  status?: InvoiceStatus | '';
+  customerName?: string;
+  overdue?: boolean;
+}
+
+/** The events `POST /api/chat` streams over SSE. Mirrors `ChatEvent` on the server. */
+export type ChatEvent =
+  | { type: 'conversation'; conversationId: string; traceId: string }
+  | { type: 'activity'; tool: string; phase: 'start' | 'end'; label: string }
+  | { type: 'token'; text: string }
+  | { type: 'done'; conversationId: string; traceId: string }
+  | { type: 'error'; message: string };

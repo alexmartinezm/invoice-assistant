@@ -2,31 +2,52 @@
 
 Single source of commands for humans and agents. Update this file in the same commit that adds or changes projects, scripts or tooling.
 
-## Current state
-
-The code does not exist yet (see Roadmap in `README.md`). Commands will be filled in per phase; the ones marked _pending_ must not be invented or assumed.
-
 ## Setup
 
 ```bash
-cp .env.example .env   # add the provider API key
+cp .env.example .env           # add the provider API key (optional: the app runs without one)
+docker compose up -d postgres  # PostgreSQL is required (ADR 006)
+dotnet restore
+npm install --prefix src/Web
 ```
 
-- Backend restore: _pending (F1)_ — planned `dotnet restore`
-- Frontend install: _pending (F1)_ — planned `npm install` in `src/Web`
+Migrations and seed data are applied on startup, so there is no separate database step. The three demo users share the password `demo1234`.
 
 ## Development
 
-- API: _pending (F1)_ — planned `dotnet run --project src/Api`
-- Web: _pending (F1)_ — planned `npm run dev` in `src/Web`
+Two terminals:
+
+```bash
+dotnet run --project src/Api           # http://localhost:5080
+npm run dev --prefix src/Web           # http://localhost:5173
+```
+
+The dev server proxies `/api` to `http://localhost:5080`; override with `API_URL` if the Api runs elsewhere. Without an AI provider configured everything works except `/api/chat`, which answers 503 naming the variables it needs.
 
 ## Tests
 
-- Backend suite: _pending (F1)_ — planned `dotnet test`
-- Evals (requires API key): _pending (F3)_ — planned `dotnet test evals/InvoiceAssistant.Evals`
+```bash
+dotnet test                            # domain + integration, against a real PostgreSQL
+```
+
+The integration tests create and drop a database per run, connecting with `TEST_POSTGRES_CONNECTION_STRING` (default `Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres`). No test calls a real model: `IChatClient` is scripted.
+
+- Evals against a real model: _pending (F3)_ — planned `dotnet test evals/InvoiceAssistant.Evals`
 
 ## Quality gates
 
-- Formatting: _pending (F1)_ — planned `dotnet format` + Prettier/ESLint in `src/Web`
-- Full build: _pending (F1)_
-- `policies.json` validation: `jq empty policies.json`
+```bash
+dotnet format --verify-no-changes      # backend formatting
+dotnet build                           # backend build
+npm run lint --prefix src/Web          # ESLint
+npm run format:check --prefix src/Web  # Prettier
+npm run build --prefix src/Web         # typecheck + Vite build into src/Api/wwwroot
+jq empty policies.json                 # policy file is valid JSON
+```
+
+## Migrations
+
+```bash
+dotnet tool install --global dotnet-ef
+dotnet ef migrations add <Name> --project src/Api --output-dir Infrastructure/Migrations
+```

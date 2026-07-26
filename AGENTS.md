@@ -19,10 +19,10 @@ Invariants that must never be broken:
 
 ## Stack
 
-- Backend: .NET 9, Minimal APIs, a single `Api` project with vertical slices.
+- Backend: .NET 10, Minimal APIs, a single `Api` project with vertical slices.
 - AI layer: `Microsoft.Extensions.AI` (`IChatClient`). Azure OpenAI as default provider, fallback to any OpenAI-compatible endpoint via config. Provider and model always in configuration, never hardcoded.
-- Frontend: React 19 + Vite + TypeScript + Tailwind. SPA served by the Api in prod.
-- Persistence: SQLite + EF Core in WAL mode, automatic seed on startup.
+- Frontend: React 19 + Vite + TypeScript + Tailwind 4. SPA served by the Api in prod from `wwwroot`.
+- Persistence: PostgreSQL + EF Core, migrations and seed applied on startup (ADR 006).
 - Auth: own JWT with demo login and 3 seed users (Admin / Accountant / Viewer).
 - Streaming: SSE on `POST /api/chat`.
 - Observability: OpenTelemetry (traces + metrics).
@@ -31,10 +31,12 @@ Invariants that must never be broken:
 
 ## Architecture
 
+- `src/Api/Domain/` — entities and their invariants. Invoice transitions and every monetary calculation live here, with no public setters for status or totals.
 - `src/Api/Features/` — business vertical slices: Invoices, Customers, Reports, Auth.
-- `src/Api/Assistant/` — ChatOrchestrator, Tools/, ToolPolicyEngine, UsageCollector.
-- `src/Api/Infrastructure/` — EF Core, seed, telemetry.
+- `src/Api/Assistant/` — ChatOrchestrator, Tools/, ChatEndpoints (ToolPolicyEngine in F2, UsageCollector in F4).
+- `src/Api/Infrastructure/` — EF Core, migrations, seed, telemetry, configuration.
 - `src/Web/` — React SPA.
+- `tests/Api.Tests/` — domain unit tests plus integration tests booting the real app against a throwaway PostgreSQL database.
 - `prompts/system.md` — versioned system prompt; its hash is recorded per conversation.
 - `policies.json` — write gate rules, structured, no DSL.
 - `evals/` — harness and cases.
