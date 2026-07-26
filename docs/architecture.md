@@ -251,8 +251,12 @@ Everyone sees their own conversations; an Admin sees everyone's. The budget figu
 every view, because a per-user slice of one shared wallet would misstate how close the demo is to
 pausing. A conversation belonging to someone else answers `404`, the same as one that never existed.
 
-Traces: an activity per turn (`assistant.turn`), children per policy evaluation, per tool call and
-per model call (`assistant.model_call`, tagged with model, tokens, latency and cost). Metrics are
+Traces: an activity per turn (`assistant.turn`), with children per tool call (`assistant.tool_call`,
+tagged with the gate's decision — `allowed`, `pending_approval`, `denied` or `blocked`), per policy
+evaluation, per outgoing API call and per model call (`assistant.model_call`, tagged with model,
+tokens, latency and cost). The decision is on the tool-call span rather than only on the policy span
+because a call stopped by a per-turn limit returns before the policy engine runs — that span is the
+only place a trace can explain it. Metrics are
 under the `InvoiceAssistant.Assistant` meter — model calls, tokens by direction, spend, budget
 rejections and unpriced calls. Console exporter in development, OTLP whenever
 `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The chat footer shows the turn's trace id, which is the point:
