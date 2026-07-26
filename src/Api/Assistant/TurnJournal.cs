@@ -18,6 +18,20 @@ public sealed class TurnJournal
     /// <summary>Writes that actually reached the database this turn.</summary>
     public int WritesExecuted { get; private set; }
 
+    /// <summary>Writes proposed this turn and waiting on a person.</summary>
+    public int WritesProposed { get; private set; }
+
+    /// <summary>
+    /// What this turn has committed to changing, executed or merely queued for a click.
+    /// </summary>
+    /// <remarks>
+    /// A proposal counts. "Cancel every invoice" that produces eight approval cards has executed
+    /// nothing, but it has still turned one instruction into eight decisions the user did not ask
+    /// to make — and a wall of pre-filled buttons is how approval fatigue gets manufactured. The
+    /// per-turn budget is spent by the intent, not by the outcome.
+    /// </remarks>
+    public int WritesPlanned => WritesExecuted + WritesProposed;
+
     public Guid? ConversationId { get; set; }
 
     /// <summary>True once a proposal is waiting, so the UI can keep the composer honest.</summary>
@@ -26,6 +40,8 @@ public sealed class TurnJournal
     public void CountToolCall() => ToolCalls++;
 
     public void CountWrite() => WritesExecuted++;
+
+    public void CountProposal() => WritesProposed++;
 
     public void Record(ChatEvent chatEvent)
     {

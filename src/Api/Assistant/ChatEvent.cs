@@ -16,25 +16,29 @@ namespace Api.Assistant;
 [JsonDerivedType(typeof(TurnFailed), "error")]
 public abstract record ChatEvent
 {
-    [JsonIgnore]
-    public abstract string EventName { get; }
+    /// <summary>
+    /// The SSE event name. A method rather than a property on purpose: a property here is
+    /// serialized into every payload unless each override remembers <c>[JsonIgnore]</c>, and the
+    /// one that forgets ships a redundant field on the wire. This cannot be forgotten.
+    /// </summary>
+    public abstract string EventName();
 }
 
 /// <summary>Sent first, so the client can pin the conversation and show the trace id.</summary>
 public sealed record ConversationStarted(Guid ConversationId, string TraceId) : ChatEvent
 {
-    public override string EventName => "conversation";
+    public override string EventName() => "conversation";
 }
 
 /// <summary>A tool call starting or finishing: this is what drives "checking invoices…" in the UI.</summary>
 public sealed record ToolActivity(string Tool, string Phase, string Label) : ChatEvent
 {
-    public override string EventName => "activity";
+    public override string EventName() => "activity";
 }
 
 public sealed record TextToken(string Text) : ChatEvent
 {
-    public override string EventName => "token";
+    public override string EventName() => "token";
 }
 
 /// <summary>
@@ -47,7 +51,7 @@ public sealed record ApprovalRequired(
     string Summary,
     DateTimeOffset ExpiresAt) : ChatEvent
 {
-    public override string EventName => "approval_required";
+    public override string EventName() => "approval_required";
 }
 
 /// <summary>
@@ -56,15 +60,15 @@ public sealed record ApprovalRequired(
 /// </summary>
 public sealed record ToolBlocked(string Tool, string Reason) : ChatEvent
 {
-    public override string EventName => "blocked";
+    public override string EventName() => "blocked";
 }
 
 public sealed record TurnCompleted(Guid ConversationId, string TraceId) : ChatEvent
 {
-    public override string EventName => "done";
+    public override string EventName() => "done";
 }
 
 public sealed record TurnFailed(string Message) : ChatEvent
 {
-    public override string EventName => "error";
+    public override string EventName() => "error";
 }

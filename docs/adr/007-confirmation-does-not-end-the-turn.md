@@ -28,5 +28,7 @@ Three things follow, and are decided here rather than left implicit:
 
 - The user sees a sentence and a card together, and the transcript still reads as a conversation.
 - Approval re-evaluates policy under the approver's identity and replays the frozen arguments (ADR 001, unchanged). The action id doubles as the `Idempotency-Key`, so a retried approval cannot pay an invoice twice.
-- The model is told, in the tool result, to say one line and stop. That is a prompt-level nicety, not a guarantee: the guarantee is that `maxWritesPerTurn` is already spent from the gate's point of view, so a model that keeps going gets blocked rather than obeyed.
+- **A proposal spends the per-turn write budget, exactly as an execution does.** This falls out of the decision and is the part that is easy to get wrong: if only executed writes counted, "cancel every invoice" would execute nothing and still produce eight approval cards. Nothing would have been written, and the user would be looking at a wall of pre-filled Approve buttons — which is how approval fatigue is manufactured, and a slower route to the same compromise. The budget is spent by the intent, not by the outcome; the second proposal in a turn is `blocked`.
+
+- The model is told, in the tool result, to say one line and stop. That is a prompt-level nicety, not a guarantee: the guarantee is the budget above, so a model that keeps going gets blocked rather than obeyed.
 - ADR 001 stays as written. Changing a decision here requires a new ADR that supersedes it, never a silent edit — this file is that ADR.

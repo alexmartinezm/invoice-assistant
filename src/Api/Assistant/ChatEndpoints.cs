@@ -117,7 +117,7 @@ public static class ChatEndpoints
         }
     }
 
-    private static SseItem<ChatEvent> ToSse(ChatEvent chatEvent) => new(chatEvent, chatEvent.EventName);
+    private static SseItem<ChatEvent> ToSse(ChatEvent chatEvent) => new(chatEvent, chatEvent.EventName());
 
     private static IResult GetTools(ToolCatalog catalog) =>
         Results.Ok(catalog.Tools.Select(tool => new

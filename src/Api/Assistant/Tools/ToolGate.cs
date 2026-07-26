@@ -177,9 +177,10 @@ public sealed class ToolGate(
             return null;
         }
 
-        if (journal.WritesExecuted >= limits.MaxWritesPerTurn)
+        // The anti-injection brake: "cancel every invoice" dies here even if the model iterates.
+        // Proposals count as well as executions — see TurnJournal.WritesPlanned.
+        if (journal.WritesPlanned >= limits.MaxWritesPerTurn)
         {
-            // The anti-injection brake: "cancel every invoice" dies here even if the model iterates.
             return await BlockAsync(
                 tool, userId, args,
                 $"Only {limits.MaxWritesPerTurn} change per turn is allowed. Ask the user to confirm the next one separately.",
@@ -241,6 +242,7 @@ public sealed class ToolGate(
         db.PendingActions.Add(action);
         await db.SaveChangesAsync(cancellationToken);
 
+        journal.CountProposal();
         journal.Record(new ApprovalRequired(action.Id, tool.Name, action.Summary, action.ExpiresAt));
 
         // The turn continues (ADR 007): the model gets a result it can narrate in one line, and the
