@@ -32,6 +32,13 @@ dotnet test                            # domain + integration, against a real Po
 
 The integration tests create and drop a database per run, connecting with `TEST_POSTGRES_CONNECTION_STRING` (default `Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres`). No test calls a real model: `IChatClient` is scripted.
 
+The write-gate tests load the repository's real `policies.json` rather than a fixture, so editing a rule or a limit is expected to move them.
+
+```bash
+dotnet test --filter FullyQualifiedName~ToolPolicyEngineTests   # the matching table, no host
+dotnet test --filter FullyQualifiedName~WriteGateTests          # the gate end to end
+```
+
 - Evals against a real model: _pending (F3)_ — planned `dotnet test evals/InvoiceAssistant.Evals`
 
 ## Quality gates

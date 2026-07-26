@@ -83,17 +83,16 @@ All commands, including the quality gates, live in [`.agent/commands.md`](.agent
 
 - **F1 · Skeleton + reads** ✅ — domain with enforced transitions, seed, JWT auth, business
   endpoints, SSE chat with read tools and propagated identity, invoices + chat UI.
-- **F2 · Write gate** — ToolPolicyEngine + `policies.json`, PendingAction, approve/reject,
-  AuditEvent, idempotency and per-turn limits.
+- **F2 · Write gate** ✅ — ToolPolicyEngine over `policies.json`, five gated write tools,
+  PendingAction with approve/reject, AuditEvent, idempotency and per-turn limits.
 - **F3 · Evals + CI** — xUnit harness, ~35 cases, evals job with per-run budget.
 - **F4 · Cost, traces and polish** — UsageCollector, spend kill switch, Usage page, OpenTelemetry,
   Docker and deploy.
 
-Until F2 lands the assistant is read-only: the tool catalog contains four read tools and nothing
-else, which is also why the Viewer and the Admin see the same figures today. The roles already
-differ at the API — a Viewer is refused every write, an Accountant is capped at a configurable
-ceiling (€1,000 by default) — and that difference becomes visible in the chat as soon as write
-tools exist.
+Roles are visible in the chat from F2 on. A Viewer's write is refused outright by policy; an
+Accountant settles small invoices without being asked, is asked to confirm larger ones, and is
+refused by the API above a configurable ceiling (€1,000 by default) even after a human approves —
+the three bands are tabulated in [`docs/architecture.md`](docs/architecture.md).
 
 **Out of scope for v1:** RAG, cross-session memory, multi-agent, real multi-tenancy, real legal invoicing (Verifactu, etc.), i18n. The invoicing app is a credible pretext, not a product.
 

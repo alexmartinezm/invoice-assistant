@@ -14,10 +14,15 @@ Persisted today (F1):
 - **InvoiceLine**: description, quantity, unitPrice, amount.
 - **Conversation / Message**: chat history per user, with the system prompt hash on the conversation.
 
-Arriving with the write gate (F2), and deliberately not created before there is anything to write:
+Added by the write gate (F2), and deliberately not created before there was anything to write:
 
 - **AuditEvent**: timestamp, userId, action, toolName?, payload (json), decision (`auto|confirmed|denied|blocked`), conversationId?.
 - **PendingAction**: id, userId, toolName, argsJson, summary, createdAt, expiresAt, status (`pending|approved|rejected|expired`).
+- **IdempotencyRecord**: key, userId, operation, statusCode, response (json), createdAt — one write, remembered for 24 hours, so a retry returns the first answer.
+
+An allowed **read** produces no `AuditEvent`. That is deliberate: it keeps `auto` meaning exactly
+"a change happened and nobody approved it", which is the thing `evals/cases/injection-03.yaml`
+asserts the absence of. A read the gate *refuses* is audited — see ADR 007.
 
 Identifiers are UUIDv7 generated in the domain and mapped `ValueGeneratedNever` — see ADR 006 for
 why that is load-bearing rather than cosmetic. Every monetary figure is computed by the `Invoice`
@@ -132,35 +137,62 @@ A domain rule violation is a `409` whose body carries a machine-readable `code`
 (`invalid_transition`, `invalid_due_date`, `ambiguous_customer`, …). Tool results are handed to the
 model verbatim, so these errors are written to be relayed as-is.
 
-Writes will use an idempotency key (`Idempotency-Key` header) from F2, together with the audit trail
-and pending actions; the assistant's executor will always send one.
+- `POST /api/actions/{id}/approve` · `POST /api/actions/{id}/reject` · `GET /api/actions/{id}`
+
+Writes accept an `Idempotency-Key` header, and the assistant always sends one: a tool call can be
+retried by the model, by the HTTP stack, or by a user clicking approve twice, and "send the invoice"
+is not something to do twice because a socket hiccuped. The same key on a *different* operation is a
+`409 idempotency_key_reused` rather than a silent replay of the other operation's response.
 
 ## Anatomy of a chat turn
 
-The target shape, reached at F2:
+As it stands after F2, with step 5 still to come:
 
 ```text
 UI ──POST /api/chat (SSE)──► ChatOrchestrator
         │ 1. loads history + system prompt (prompts/system.md, versioned)
         │ 2. IChatClient.GetStreamingResponseAsync with registered tools
-        │ 3. for each model tool call:
-        │      ToolPolicyEngine.Evaluate(tool, args, user)
-        │        ├─ Allow          → ToolExecutor → HTTP to our own API with the user's JWT
-        │        ├─ RequireConfirm → creates PendingAction → SSE `approval_required` → ends the turn
-        │        └─ Deny           → error to the model + AuditEvent `blocked` → the model explains it
-        │ 4. text streaming + activity events
-        └─ 5. UsageCollector records tokens/cost/latency for the turn
+        │ 3. every tool call, read or write, enters ToolGate:
+        │      per-turn limits → ToolPolicyEngine.Evaluate(tool, args, role)
+        │        ├─ Allow          → HTTP to our own API with the user's JWT; writes audit `auto`
+        │        ├─ RequireConfirm → PendingAction + TurnJournal → SSE `approval_required`
+        │        └─ Deny           → AuditEvent `denied` + SSE `blocked` → the model explains it
+        │      a limit exceeded    → AuditEvent `blocked` + SSE `blocked`
+        │ 4. text streaming + activity events, draining the journal after each tool result
+        └─ 5. UsageCollector records tokens/cost/latency for the turn      (F4)
 ```
 
-What `ChatOrchestrator` does today, with step 3 still a straight execution and step 5 not yet
-written: load or create the conversation (recording the prompt hash), build system prompt + bounded
-history + the new message, stream from the model with the tool catalog attached, and save the turn.
-Tool calls are executed by `Microsoft.Extensions.AI`'s function-invoking client, and each one goes
-over HTTP to our own API carrying the caller's bearer token.
+`ChatOrchestrator` reads top to bottom: load or create the conversation (recording the prompt hash),
+build system prompt + bounded history + the new message, stream from the model with the tool catalog
+attached, save the turn. Tool calls are executed by `Microsoft.Extensions.AI`'s function-invoking
+client, and each one goes over HTTP to our own API carrying the caller's bearer token.
+
+**The gate is not in the orchestrator, and cannot be.** That middleware owns execution; the
+orchestrator only watches it. So the gate sits inside the tool delegates — the one choke point every
+call must pass — and a scoped `TurnJournal` carries approvals and blocks back out, which step 4
+drains into the stream. This is the single extra file jump a reader has to make; ADR 007 explains
+the trade and why the alternative was worse.
 
 The SSE events are `conversation` (with the trace id), `activity` (a tool starting or finishing),
-`token`, `done` and `error`. Once the response has started there is no status code left to fail with,
-so a failure mid-turn arrives as an `error` event rather than an HTTP error.
+`token`, `approval_required`, `blocked`, `done` and `error`. Once the response has started there is
+no status code left to fail with, so a failure mid-turn arrives as an `error` event rather than an
+HTTP error. `blocked` is separate from `error` because nothing went wrong: the system did its job.
+
+## Two ceilings, layered
+
+`policies.json` lets an Accountant settle invoices up to **100** without asking; the endpoint's own
+`Invoicing:AccountantMarkPaidLimit` is **1000**. That is not a contradiction, it is the whole
+argument of the repo in three rows:
+
+| Invoice total | What happens |
+|---|---|
+| ≤ 100 | Policy `allow` → executes, audited `auto` |
+| 100 – 1000 | Policy `require_confirmation` → `PendingAction`; audited `confirmed` on approval |
+| > 1000 | A human approves — and the **API still refuses** an Accountant (`amount_limit_exceeded`) |
+
+The third row is the interesting one: the person said yes and the server said no anyway, because
+endpoint authorization was never delegated to the gate. There is a test per band in
+`tests/Api.Tests/WriteGateTests.cs`.
 
 Tool results are returned to the model as parsed JSON, not as a JSON string: a stringified result is
 re-encoded into the conversation with every quote escaped, which costs tokens and buries the data a
@@ -170,17 +202,22 @@ level deeper than the model expects.
 
 Every tool declares: `name`, `description`, args JSON schema, `sideEffect: read|write`, `requiredRole`, `riskLevel`.
 
-**Read** (auto-execute, implemented): `list_invoices`, `get_invoice`, `search_customers`,
-`get_receivables_summary` (aging computed by the API, never by the model).
+**Read** (`defaults.read` is `allow`, so they execute): `list_invoices`, `get_invoice`,
+`search_customers`, `get_receivables_summary` (aging computed by the API, never by the model). They
+still pass through the gate, which is what makes `defaults.read` a real setting rather than
+decoration — a deployment can require confirmation for reads, or deny them for a role, without a
+code change.
 
-**Write** (F2; confirmation unless an explicit rule applies): `create_draft_invoice`, `send_invoice`,
+**Write** (confirmation unless an explicit rule applies): `create_draft_invoice`, `send_invoice`,
 `mark_invoice_paid`, `cancel_invoice`, `update_due_date`.
 
 Tool parameter names are snake_case because they are a public contract: they appear in the schema
 sent to the model and in the eval cases under `evals/cases/`, so renaming one is a breaking change.
 `GET /api/assistant/tools` returns the live catalog with each tool's metadata.
 
-**Capability boundary:** there is no delete tool, no bulk operations, no admin. Whatever is not in the catalog is physically impossible. The first line of defense is which tools you expose, not what you forbid in the prompt.
+**Capability boundary:** there is no delete tool, no bulk operations, no admin, and no write that
+touches more than the one invoice the caller names. Whatever is not in the catalog is physically
+impossible. The first line of defense is which tools you expose, not what you forbid in the prompt.
 
 ## Cross-cutting security
 
