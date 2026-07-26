@@ -20,4 +20,7 @@
 
 - Delivery is not finished when the PR opens: watch the checks until they are green.
 - One red eval case = red build. Cases are not disabled to make CI pass; either the prompt is fixed or the case change is justified in the PR.
-- No API key (forks): the evals job skips with a warning, never fails.
+- Evals only run for the repository owner, from a branch of this repository: a fork's PR, an
+  outside contributor's run or a missing API key skips the job with a warning and stays green,
+  never fails. A green `evals` check on such a PR means "not run" — before merging a change to
+  the prompt, the policy or the assistant slice, push the branch here and let the suite run.

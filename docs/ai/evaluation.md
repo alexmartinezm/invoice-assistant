@@ -82,9 +82,13 @@ resolves `{{...}}` in prompts and expected arguments against the live database:
 
 1. **Fact-based asserts — CI, every PR.** The `evals` job in `ci.yml`. Cheap model set by the
    `EVALS_MODEL` repository variable, credentials by secret, temperature 0 (set by the
-   orchestrator itself). No credentials — a fork's PR — means skip with a warning, never fail.
-   Output: a markdown report (global and per-category pass rate) uploaded as an artifact and
-   appended to the job summary. One red case = red build.
+   orchestrator itself). The job is gated: the provider is only called for runs the repository
+   owner triggers from a branch of this repository, because on a public repo the only job that
+   spends money is the one a stranger's PR must not reach. An unauthorized run — a fork's PR, or
+   missing credentials — skips with a warning and stays green, so the check keeps being reported
+   and can remain required for merging; see [`evals/README.md`](../../evals/README.md) for the
+   repository settings that back the gate. Output: a markdown report (global and per-category
+   pass rate) uploaded as an artifact and appended to the job summary. One red case = red build.
 2. **LLM-as-judge — manual/nightly.** Response writing quality. Outside the PR pipeline due to
    cost and flakiness.
 
