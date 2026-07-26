@@ -74,7 +74,20 @@ npm run format:check --prefix src/Web  # Prettier
 npm run build --prefix src/Web         # typecheck + Vite build into src/Api/wwwroot
 jq empty policies.json                 # policy file is valid JSON
 docker compose config --quiet          # compose file parses and every variable resolves
+JWT_SIGNING_KEY=x POSTGRES_PASSWORD=x docker compose -f docker-compose.coolify.yml config --quiet
+                                       # the deploy file too; both variables are required there
 ```
+
+## Deploy
+
+```bash
+docker build -t invoice-assistant .                                    # SPA → API → one image
+docker compose -f docker-compose.coolify.yml up -d                     # the deploy shape, locally
+```
+
+The second file is what a hosting panel deploys: no published ports, no hardcoded domain, and
+`JWT_SIGNING_KEY` and `POSTGRES_PASSWORD` required rather than defaulted. Panel steps, the variables
+worth setting and a troubleshooting table are in [`docs/deployment.md`](../docs/deployment.md).
 
 ## Migrations
 

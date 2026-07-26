@@ -37,6 +37,13 @@ jobs:
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
 
+      # A deploy file only breaks when someone deploys, which is the worst moment to find out.
+      - name: Validate the Compose files
+        run: |
+          docker compose config --quiet
+          JWT_SIGNING_KEY=ci POSTGRES_PASSWORD=ci \
+            docker compose -f docker-compose.coolify.yml config --quiet
+
   backend:
     runs-on: ubuntu-latest
 

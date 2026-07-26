@@ -1,6 +1,11 @@
 # The whole demo: `docker compose up` builds the SPA into the API's wwwroot, brings up PostgreSQL,
 # applies migrations and seeds the ledger. One container to deploy, which is what makes this
-# runnable on a small VPS behind Coolify.
+# runnable on a small VPS.
+#
+# This file is for running the demo yourself: locally, or on a plain VPS with `docker compose up`.
+# Deploying through Coolify uses `docker-compose.coolify.yml` instead, which publishes no host
+# ports and lets the panel own the domain, the TLS and the database password. Both files build the
+# same image from the same Dockerfile; see docs/deployment.md.
 #
 # Every variable below is read from the shell or from a `.env` beside this file (see .env.example),
 # and every one has a default that works — the demo runs with no key at all, only /api/chat then
@@ -33,6 +38,13 @@ services:
       # deployment sets its own.
       JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-change-me-demo-only-must-be-at-least-32-characters}
 
+      # The assistant's tools call our own API over HTTP (ADR 002). Left empty, the base URL is
+      # derived from the incoming request — fine on a naked port, wrong behind a TLS-terminating
+      # proxy, where the container would call its own public https domain over http and the
+      # redirect would strip the bearer token off the tool call. Loopback keeps the call inside
+      # the container, so it does not depend on how the outside world reaches the app.
+      ASSISTANT_API_BASE_URL: ${ASSISTANT_API_BASE_URL:-http://localhost:8080}
+
       AI_PROVIDER: ${AI_PROVIDER:-azure-openai}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
@@ -62,8 +74,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-invoice_assistant}
+    # Published on loopback only: `dotnet run` and `dotnet test` on the host need to reach it, and
+    # nothing else does. The default credentials are postgres/postgres, so binding this to every
+    # interface would hand the demo's database to the internet the moment it runs on a VPS.
     ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      - '${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
