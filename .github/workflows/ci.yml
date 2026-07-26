@@ -99,8 +99,72 @@ jobs:
 
       - run: npm run build
 
-  # F3 · evals against a real model: cheap pinned model, temperature 0, per-run budget.
-  # No API key (forks): skip with a warning, never fail. One red case = red build.
-  # evals:
-  #   needs: backend
-  #   ...
+  # Evals against a real model: cheap pinned model, temperature 0, 1 retry per case, per-run
+  # token budget. One red case = red build. Forks receive no secrets, so without credentials the
+  # job warns and skips instead of failing (the harness itself also skips per case).
+  #
+  # Configure in the repository settings:
+  #   variables: EVALS_MODEL (e.g. an inexpensive pinned model id)
+  #   secrets:   AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY, or OPENAI_API_KEY (+ OPENAI_BASE_URL)
+  evals:
+    needs: [repo-checks, backend]
+    runs-on: ubuntu-latest
+
+    env:
+      EVALS_MODEL: ${{ vars.EVALS_MODEL }}
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      EVALS_REPORT_PATH: ${{ github.workspace }}/evals-report.md
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect eval credentials
+        id: credentials
+        run: |
+          if [ -n "$EVALS_MODEL" ] && { { [ -n "$AZURE_OPENAI_ENDPOINT" ] && [ -n "$AZURE_OPENAI_API_KEY" ]; } || [ -n "$OPENAI_API_KEY" ]; }; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Evals skipped: EVALS_MODEL and provider credentials are not configured (forks never receive secrets)."
+            echo "> [!WARNING]" >> "$GITHUB_STEP_SUMMARY"
+            echo "> Evals skipped: no eval model credentials configured." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.credentials.outputs.available == 'true'
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run evals
+        if: steps.credentials.outputs.available == 'true'
+        run: dotnet test evals/InvoiceAssistant.Evals --configuration Release
+        env:
+          TEST_POSTGRES_CONNECTION_STRING: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
+
+      - name: Publish report to the job summary
+        if: always() && hashFiles('evals-report.md') != ''
+        run: cat "$EVALS_REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifact
+        if: always() && hashFiles('evals-report.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-report
+          path: evals-report.md
