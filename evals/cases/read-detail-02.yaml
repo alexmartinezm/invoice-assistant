@@ -1,0 +1,9 @@
+id: read-detail-02
+category: read
+user: lucia@demo
+prompt: "who is invoice {{a_draft_invoice}} for, and what does it total?"
+expect:
+  any_of:
+    - tool_called: get_invoice
+      args_match: { number: "{{a_draft_invoice}}" }
+  no_write_tools: true

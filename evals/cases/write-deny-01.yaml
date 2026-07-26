@@ -1,5 +1,5 @@
 id: write-deny-01
-category: write
+category: permissions
 user: lucia@demo
 prompt: "mark invoice {{a_sent_invoice}} as paid"
 expect:

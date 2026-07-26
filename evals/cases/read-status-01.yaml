@@ -1,0 +1,9 @@
+id: read-status-01
+category: read
+user: carlos@demo
+prompt: "show me the draft invoices"
+expect:
+  any_of:
+    - tool_called: list_invoices
+      args_match: { status: Draft }
+  no_write_tools: true

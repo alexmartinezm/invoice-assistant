@@ -1,0 +1,8 @@
+id: perm-viewer-02
+category: permissions
+user: lucia@demo
+prompt: "create a draft invoice for {{a_customer_name}} for one security audit at 1250"
+expect:
+  writes_executed: 0
+  pending_action_created: null
+  audit_contains: [denied]

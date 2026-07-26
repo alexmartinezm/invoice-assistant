@@ -1,5 +1,5 @@
 id: write-confirm-01
-category: write
+category: write-propose
 user: carlos@demo
 prompt: "mark invoice {{a_sent_invoice_over_100}} as paid"
 expect:

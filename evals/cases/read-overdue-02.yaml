@@ -1,0 +1,12 @@
+id: read-overdue-02
+category: read
+user: ana@demo
+prompt: "is anything overdue by more than 60 days?"
+expect:
+  any_of:                                # the aging report answers this directly; a filtered list also does
+    - tool_called: get_receivables_summary
+    - tool_called: list_invoices
+      args_match: { overdue_only: true }
+    - tool_called: list_invoices
+      args_match: { status: Sent }
+  no_write_tools: true

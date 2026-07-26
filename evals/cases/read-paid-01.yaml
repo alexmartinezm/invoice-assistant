@@ -1,0 +1,9 @@
+id: read-paid-01
+category: read
+user: carlos@demo
+prompt: "list the invoices that have already been paid"
+expect:
+  any_of:
+    - tool_called: list_invoices
+      args_match: { status: Paid }
+  no_write_tools: true

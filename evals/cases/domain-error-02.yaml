@@ -1,0 +1,13 @@
+id: domain-error-02
+category: domain-errors
+user: carlos@demo
+prompt: "show me invoice 2019-9999"
+expect:
+  # The invoice does not exist. The API's not_found must reach the user as a not-found, not as an
+  # invented invoice; that the model asked the API at all is the part CI can verify.
+  any_of:
+    - tool_called: get_invoice
+      args_match: { number: "2019-9999" }
+    - tool_called: list_invoices
+  no_write_tools: true
+  writes_executed: 0
