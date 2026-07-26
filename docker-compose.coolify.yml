@@ -1,0 +1,96 @@
+# The same demo as docker-compose.yml, arranged the way a hosting panel wants it: Coolify owns the
+# domain, the TLS certificate and the reverse proxy, so nothing here publishes a host port and
+# nothing here hardcodes a URL. Point Coolify's "Docker Compose Location" at this file.
+#
+# What this file deliberately does not do, because Coolify does it:
+#   - no `container_name`: Coolify names containers itself, and a fixed name collides across
+#     deployments and preview environments.
+#   - no `ports`: publishing a port on the host bypasses the proxy and skips TLS. The app is
+#     reached by assigning a domain to the `app` service in Coolify, written with the container
+#     port: `https://invoices.example.com:8080`.
+#   - no custom `networks`: Coolify puts the stack on its own isolated network, and a custom one
+#     is documented to make Traefik intermittently unreachable.
+#
+# Two variables have no default on purpose — set both under the resource's Environment Variables,
+# and the deploy fails loudly rather than quietly running a public demo on known credentials:
+#
+#   JWT_SIGNING_KEY    32+ characters. Anyone who knows it can mint an Admin token for your demo.
+#   POSTGRES_PASSWORD  the database password. Coolify can generate one for you: name the variable
+#                      SERVICE_PASSWORD_POSTGRES instead and it fills it in, or just paste a value.
+#
+# Everything else is optional and documented in docs/deployment.md.
+
+services:
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Not published to the host: this is what the proxy connects to once the service has a domain.
+    expose:
+      - '8080'
+
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+
+      # Traefik terminates TLS and forwards plain HTTP, so without this the app believes every
+      # request arrived over http from the proxy's IP — which is what the logs, the traces and the
+      # anonymous rate-limit partition would then record. Understood natively by ASP.NET Core; no
+      # code in the repo reads it.
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: 'true'
+
+      # The assistant's tools call our own API over HTTP (ADR 002). Behind a TLS-terminating proxy
+      # the fallback — derive the base URL from the incoming request — would have the container
+      # call its own public https domain over http; the proxy's redirect to https then strips the
+      # bearer token, and every tool call comes back "unauthenticated". Loopback keeps the call
+      # inside the container and out of the proxy's way.
+      ASSISTANT_API_BASE_URL: http://localhost:8080
+
+      POSTGRES_CONNECTION_STRING: >-
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-invoice_assistant};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD}
+
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY}
+
+      AI_PROVIDER: ${AI_PROVIDER:-azure-openai}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_CHAT_DEPLOYMENT: ${AZURE_OPENAI_CHAT_DEPLOYMENT:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-}
+
+      # The spend kill switch. This is what makes a public demo safe to leave running with a real
+      # key in it, and it is the one default worth reviewing before you point a domain at this.
+      USAGE_DAILY_BUDGET_EUR: ${USAGE_DAILY_BUDGET_EUR:-1}
+
+      INVOICING_CURRENCY: ${INVOICING_CURRENCY:-EUR}
+      INVOICING_LOCALE: ${INVOICING_LOCALE:-en-GB}
+      INVOICING_MARKET: ${INVOICING_MARKET:-es-ES}
+      INVOICING_TAX_LABEL: ${INVOICING_TAX_LABEL:-VAT}
+
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_CONSOLE_EXPORTER: ${OTEL_CONSOLE_EXPORTER:-false}
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+
+    # No `ports` and no `expose`: the database is reachable from the app over the stack's internal
+    # network by its service name, and from nowhere else.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-invoice_assistant}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:

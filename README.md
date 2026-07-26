@@ -42,9 +42,10 @@ invoice-assistant/
 │   └── cases/                    # Declarative *.yaml cases
 ├── prompts/system.md             # Versioned system prompt (hash per conversation)
 ├── policies.json                 # Write gate: structured rules, no DSL
-├── docs/                         # Architecture + ADRs
+├── docs/                         # Architecture + ADRs + deployment
 ├── Dockerfile                    # SPA build → API publish → one runtime image
 ├── docker-compose.yml            # The whole demo, or just PostgreSQL for development
+├── docker-compose.coolify.yml    # The same stack with the panel owning domain, TLS and proxy
 └── .github/workflows/ci.yml      # repo checks → backend → frontend → evals
 ```
 
@@ -86,6 +87,20 @@ which variables it wants. That is deliberate — you can read and run the repo b
 provider.
 
 All commands, including the quality gates, live in [`.agent/commands.md`](.agent/commands.md).
+
+## Deploying it
+
+The same image runs anywhere a container does; it takes its whole configuration from environment
+variables. On **Coolify**, point a Docker Compose resource at
+[`docker-compose.coolify.yml`](docker-compose.coolify.yml), set `JWT_SIGNING_KEY` and
+`POSTGRES_PASSWORD`, and give the `app` service a domain written with the container port
+(`https://invoices.example.com:8080`). On a VPS you manage, `docker compose up -d` is the whole
+deploy.
+
+Behind any TLS-terminating proxy there is one setting worth knowing about — the assistant calls our
+own API over HTTP, so it needs to know where "itself" is — and one worth deciding before you hand
+the URL out, the daily spend cap. Both, plus a managed-database variant and a troubleshooting
+table, are in [`docs/deployment.md`](docs/deployment.md).
 
 ## What a conversation costs
 
