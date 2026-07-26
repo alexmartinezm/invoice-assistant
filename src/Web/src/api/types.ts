@@ -87,5 +87,24 @@ export type ChatEvent =
   | { type: 'conversation'; conversationId: string; traceId: string }
   | { type: 'activity'; tool: string; phase: 'start' | 'end'; label: string }
   | { type: 'token'; text: string }
+  | {
+      type: 'approval_required';
+      actionId: string;
+      tool: string;
+      summary: string;
+      expiresAt: string;
+    }
+  | { type: 'blocked'; tool: string; reason: string }
   | { type: 'done'; conversationId: string; traceId: string }
   | { type: 'error'; message: string };
+
+/**
+ * What became of a proposed write. `summary` and `message` are both written by the server: the
+ * sentence a person agreed to, and the sentence describing what happened, are never the model's.
+ */
+export interface ActionOutcome {
+  actionId: string;
+  status: 'approved' | 'rejected' | 'failed';
+  summary: string;
+  message: string;
+}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { streamChatTurn } from '../api/client';
+import { api, streamChatTurn } from '../api/client';
+import type { PendingApproval } from './ApprovalCard';
 
 export interface ToolRun {
   tool: string;
@@ -7,14 +8,27 @@ export interface ToolRun {
   finished: boolean;
 }
 
+export interface Block {
+  tool: string;
+  reason: string;
+}
+
 export type ChatItem =
   | { kind: 'user'; text: string }
-  | { kind: 'assistant'; text: string; tools: ToolRun[]; failure: string | null };
+  | {
+      kind: 'assistant';
+      text: string;
+      tools: ToolRun[];
+      approvals: PendingApproval[];
+      blocks: Block[];
+      failure: string | null;
+    };
 
 /**
  * Drives one conversation. The SSE events map straight onto what the user sees: `activity` becomes
- * a tool chip, `token` appends to the answer, `error` becomes a red card, and `conversation`
- * carries the trace id shown in the footer.
+ * a tool chip, `token` appends to the answer, `approval_required` becomes a decision card,
+ * `blocked` becomes a refusal, `error` becomes a red card, and `conversation` carries the trace id
+ * shown in the footer.
  */
 export function useChatStream(token: string) {
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -30,11 +44,36 @@ export function useChatStream(token: string) {
       const last = current.at(-1);
       if (last?.kind !== 'assistant') return current;
 
-      const updated = { ...last, tools: [...last.tools] };
+      const updated = {
+        ...last,
+        tools: [...last.tools],
+        approvals: [...last.approvals],
+        blocks: [...last.blocks],
+      };
       change(updated);
       return [...current.slice(0, -1), updated];
     });
   }, []);
+
+  /** Finds a card wherever it is in the transcript: it may have scrolled several turns back. */
+  const updateApproval = useCallback(
+    (actionId: string, change: (approval: PendingApproval) => PendingApproval) => {
+      setItems((current) =>
+        current.map((item) => {
+          if (item.kind !== 'assistant') return item;
+          if (!item.approvals.some((approval) => approval.actionId === actionId)) return item;
+
+          return {
+            ...item,
+            approvals: item.approvals.map((approval) =>
+              approval.actionId === actionId ? change(approval) : approval,
+            ),
+          };
+        }),
+      );
+    },
+    [],
+  );
 
   const send = useCallback(
     async (message: string) => {
@@ -47,7 +86,7 @@ export function useChatStream(token: string) {
       setItems((current) => [
         ...current,
         { kind: 'user', text },
-        { kind: 'assistant', text: '', tools: [], failure: null },
+        { kind: 'assistant', text: '', tools: [], approvals: [], blocks: [], failure: null },
       ]);
       setStreaming(true);
 
@@ -82,6 +121,24 @@ export function useChatStream(token: string) {
                 });
                 break;
 
+              case 'approval_required':
+                updateAnswer((answer) => {
+                  answer.approvals.push({
+                    actionId: event.actionId,
+                    tool: event.tool,
+                    summary: event.summary,
+                    expiresAt: event.expiresAt,
+                    state: { status: 'pending' },
+                  });
+                });
+                break;
+
+              case 'blocked':
+                updateAnswer((answer) => {
+                  answer.blocks.push({ tool: event.tool, reason: event.reason });
+                });
+                break;
+
               case 'error':
                 updateAnswer((answer) => {
                   answer.failure = event.message;
@@ -108,6 +165,43 @@ export function useChatStream(token: string) {
     [conversationId, streaming, token, updateAnswer],
   );
 
+  /**
+   * Approving or rejecting is its own request, not a chat turn: the write runs under this user's
+   * token and the outcome sentence comes back from the server, so the assistant never gets to
+   * narrate what happened to somebody's money.
+   */
+  const decide = useCallback(
+    async (actionId: string, decision: 'approve' | 'reject') => {
+      updateApproval(actionId, (approval) => ({
+        ...approval,
+        state: { status: 'working', decision },
+      }));
+
+      try {
+        const outcome = await api.resolveAction(token, actionId, decision);
+
+        updateApproval(actionId, (approval) => ({
+          ...approval,
+          state: {
+            status: 'resolved',
+            message: outcome.message,
+            failed: outcome.status === 'failed',
+          },
+        }));
+      } catch (cause) {
+        updateApproval(actionId, (approval) => ({
+          ...approval,
+          state: {
+            status: 'resolved',
+            message: cause instanceof Error ? cause.message : 'The action could not be resolved.',
+            failed: true,
+          },
+        }));
+      }
+    },
+    [token, updateApproval],
+  );
+
   const reset = useCallback(() => {
     abort.current?.abort();
     setItems([]);
@@ -116,5 +210,5 @@ export function useChatStream(token: string) {
     setStreaming(false);
   }, []);
 
-  return { items, streaming, traceId, send, reset };
+  return { items, streaming, traceId, send, decide, reset };
 }

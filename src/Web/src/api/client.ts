@@ -1,4 +1,5 @@
 import type {
+  ActionOutcome,
   AppConfig,
   AuthenticatedUser,
   ChatEvent,
@@ -87,6 +88,15 @@ export const api = {
     request<InvoiceDetail>(`/api/invoices/${encodeURIComponent(number)}`, token),
 
   receivables: (token: string) => request<ReceivablesReport>('/api/reports/receivables', token),
+
+  /**
+   * Approving runs the write under this user's own token, and the server re-checks policy before
+   * it does — the button is a decision, not an instruction the API takes on trust.
+   */
+  resolveAction: (token: string, actionId: string, decision: 'approve' | 'reject') =>
+    request<ActionOutcome>(`/api/actions/${encodeURIComponent(actionId)}/${decision}`, token, {
+      method: 'POST',
+    }),
 };
 
 /**
