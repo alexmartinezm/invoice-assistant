@@ -160,12 +160,12 @@ UI ──POST /api/chat (SSE)──► ChatOrchestrator
         │ 2. IChatClient.GetStreamingResponseAsync with registered tools
         │      └─ UsageCollector meters each model call and re-checks the budget  (F4)
         │ 3. every tool call, read or write, enters ToolGate:
-        │      per-turn limits → ToolPolicyEngine.Evaluate(tool, args, role)
+        │      per-turn limits → tool.requiredRole floor → ToolPolicyEngine.Evaluate(tool, args, role)
         │        ├─ Allow          → HTTP to our own API with the user's JWT; writes audit `auto`
         │        ├─ RequireConfirm → PendingAction + TurnJournal → SSE `approval_required`
         │        └─ Deny           → AuditEvent `denied` + SSE `blocked` → the model explains it
         │      a limit exceeded    → AuditEvent `blocked` + SSE `blocked`
-        │      (a proposal spends the per-turn write budget too — ADR 007)
+        │      (a write proposal spends the per-turn write budget too — ADR 007)
         └─ 4. text streaming + activity events, draining the journal after each tool result
 ```
 
@@ -208,6 +208,12 @@ level deeper than the model expects.
 ## Tool catalog
 
 Every tool declares: `name`, `description`, args JSON schema, `sideEffect: read|write`, `requiredRole`, `riskLevel`.
+
+`requiredRole` is a floor the gate applies before it consults the policy, and again when somebody
+clicks approve. A rule can narrow what a role may do; it cannot lift it above the role the tool
+declares, because the endpoint behind the tool would refuse anyway. That ordering is what stops the
+gate offering an approval card to a user whose own approval could never authorise it — an Accountant
+asking to cancel an invoice is told an Admin is needed, rather than handed a button that answers 403.
 
 **Read** (`defaults.read` is `allow`, so they execute): `list_invoices`, `get_invoice`,
 `search_customers`, `get_receivables_summary` (aging computed by the API, never by the model). They

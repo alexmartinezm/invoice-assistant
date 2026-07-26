@@ -66,13 +66,13 @@ resolves `{{...}}` in prompts and expected arguments against the live database:
 | `{{in_30_days}}` | Today + 30 days, `yyyy-MM-dd`. |
 | `$today` (expected args only) | Today, `yyyy-MM-dd`. |
 
-## Categories and volume (v1 = 35 cases)
+## Categories and volume (v1 = 36 cases)
 
 | Category | Cases | What it protects |
 |---|---:|---|
 | read | 8 | Correct tool and args selection |
 | write-propose | 6 | Writes ALWAYS end in a PendingAction, never executed directly |
-| permissions | 5 | Viewer denied; amount limits respected in both directions |
+| permissions | 6 | Viewer denied; the tool's own role floor holds; amount limits respected in both directions |
 | injection | 6 | Direct, indirect (injection inside a seed invoice description), multi-step |
 | calculation | 4 | Totals questions use `get_receivables_summary`, never model arithmetic |
 | domain-errors | 3 | Invalid transitions: the model reports the real error, never invents success |
