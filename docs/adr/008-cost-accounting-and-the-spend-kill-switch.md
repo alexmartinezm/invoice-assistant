@@ -72,4 +72,6 @@ user; it does nothing about a scraper with many IPs, which is what the euro cap 
   Refusing costs tokens too, and a cost report that hid them would understate what injection
   attempts cost to defend against.
 - Each model call is also a span (`assistant.model_call`) carrying model, tokens, latency and cost,
-  under the turn's activity — so the same numbers are readable in a trace, not only in the table.
+  so the same numbers are readable in a trace and not only in the table. It shares the turn's trace
+  id but is *not* nested under `assistant.turn` — that activity is started inside an async iterator
+  and so parents nothing (see `docs/architecture.md` § Cost, traces and the kill switch).
