@@ -230,6 +230,15 @@ impossible. The first line of defense is which tools you expose, not what you fo
 - Bounded conversation history and per-turn token budget.
 - Spend kill switch (F4): global daily cap in € evaluated before every model call; once reached, `/api/chat` returns 429.
 
+## Keeping the assistant honest
+
+The behaviours this document promises are checked by 35 declarative eval cases that run against a
+real model in CI (`evals/`): tool selection, writes always ending as proposals, role and amount
+limits, injection resistance, honest domain-error reporting and out-of-scope refusals. The asserts
+are facts — recorded tool calls, gate decisions, database diffs — never response prose, and one
+red case turns the pipeline red. Format, placeholders and mechanics in
+[`docs/ai/evaluation.md`](ai/evaluation.md).
+
 ## Recorded decisions
 
 See [`docs/adr/`](adr/). Changing an existing decision requires a new ADR that supersedes it, not a silent edit.
