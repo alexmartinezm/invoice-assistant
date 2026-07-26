@@ -7,8 +7,12 @@ import { formatCostEur, formatCount, pluralize } from '../format';
  * the distribution is the story again, this time of a wallet instead of a debt.
  */
 export function UsageStrip({ summary }: { summary: UsageSummary }) {
-  const budget = summary.dailyBudgetEur || 1;
-  const spentShare = Math.min(summary.spentTodayEur / budget, 1);
+  // A budget of zero is a legitimate setting — it is how the assistant is switched off — and it
+  // is exactly when the bar should read full. Dividing by it would chart the spend against a
+  // fictional euro and show an almost empty bar beside the word "exhausted".
+  const spentShare = summary.budgetExhausted
+    ? 1
+    : Math.min(summary.spentTodayEur / summary.dailyBudgetEur, 1);
 
   return (
     <section aria-labelledby="usage-summary" className="card p-5 sm:p-6">

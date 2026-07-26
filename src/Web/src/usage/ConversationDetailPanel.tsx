@@ -40,7 +40,10 @@ export function ConversationDetailPanel({
       tool: event.tool,
       decision: event.decision,
     })),
-  ].sort((a, b) => a.at.localeCompare(b.at));
+    // Compared as instants, not as strings. `localeCompare` applies locale collation to the
+    // punctuation, and it puts "…09:00:02+00:00" *after* "…09:00:02.4+00:00" — so a whole-second
+    // tool decision would sort below the model call that followed it.
+  ].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
   return (
     <section aria-labelledby="conversation-detail" className="card slide-in overflow-hidden">

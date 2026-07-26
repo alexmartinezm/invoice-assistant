@@ -61,6 +61,12 @@ public sealed record ConversationUsageDetail(
 /// </summary>
 public static class UsageEndpoints
 {
+    /// <summary>
+    /// How many conversations the list returns. There is no paging: this is a demo ledger, and the
+    /// page says so rather than pretending the newest hundred are all of them.
+    /// </summary>
+    public const int MaxConversations = 100;
+
     public static IEndpointRouteBuilder MapUsageEndpoints(this IEndpointRouteBuilder routes)
     {
         var group = routes.MapGroup("/api/usage")
@@ -124,53 +130,60 @@ public static class UsageEndpoints
         var records = FilterByDate(Visible(db, principal), from, to)
             .Where(r => r.ConversationId != null);
 
+        // The totals come from the usage rows; when the conversation *started* and whose it is come
+        // from the conversation itself, joined here rather than aggregated off the rows. The first
+        // usage row is written after the first model call answers, so a minimum over the rows is a
+        // second or two later than the conversation — and the detail endpoint, which reads the
+        // conversation directly, would then disagree with this list about the same conversation.
         var rows = await records
             .GroupBy(r => r.ConversationId!.Value)
             .Select(g => new
             {
                 ConversationId = g.Key,
-                StartedAt = g.Min(r => r.CreatedAt),
                 ModelCalls = g.Count(),
                 PromptTokens = g.Sum(r => (long)r.PromptTokens),
                 CompletionTokens = g.Sum(r => (long)r.CompletionTokens),
                 ToolCalls = g.Sum(r => r.ToolCallCount),
                 CostEur = g.Sum(r => r.CostEur),
             })
-            .OrderByDescending(row => row.StartedAt)
-            .Take(100)
+            .Join(
+                db.Conversations.AsNoTracking(),
+                totals => totals.ConversationId,
+                conversation => conversation.Id,
+                (totals, conversation) => new { totals, conversation.CreatedAt, conversation.UserId })
+            .Join(
+                db.Users.AsNoTracking(),
+                row => row.UserId,
+                user => user.Id,
+                (row, user) => new { row.totals, row.CreatedAt, user.Email })
+            .OrderByDescending(row => row.CreatedAt)
+            .Take(MaxConversations)
             .ToListAsync(cancellationToken);
 
-        var conversationIds = rows.Select(row => row.ConversationId).ToList();
+        var conversationIds = rows.Select(row => row.totals.ConversationId).ToList();
 
-        // Model names and user emails are joined in memory: a string-aggregate does not translate,
-        // and there are at most a hundred rows here by construction.
+        // The model names are gathered separately and joined in memory: a string aggregate does not
+        // translate, and there are at most MaxConversations rows here by construction.
         var models = await db.UsageRecords.AsNoTracking()
             .Where(r => r.ConversationId != null && conversationIds.Contains(r.ConversationId.Value))
             .Select(r => new { ConversationId = r.ConversationId!.Value, r.Model })
             .Distinct()
             .ToListAsync(cancellationToken);
 
-        // The owner comes from the conversation, not aggregated off the records — PostgreSQL has
-        // no min(uuid), and the conversation is the authority on whose it is anyway.
-        var owners = await db.Conversations.AsNoTracking()
-            .Where(c => conversationIds.Contains(c.Id))
-            .Join(db.Users.AsNoTracking(), c => c.UserId, u => u.Id, (c, u) => new { c.Id, u.Email })
-            .ToDictionaryAsync(pair => pair.Id, pair => pair.Email, cancellationToken);
-
         return Results.Ok(rows
             .Select(row => new ConversationUsageRow(
-                row.ConversationId,
-                row.StartedAt,
-                owners.GetValueOrDefault(row.ConversationId, string.Empty),
+                row.totals.ConversationId,
+                row.CreatedAt,
+                row.Email,
                 string.Join(", ", models
-                    .Where(m => m.ConversationId == row.ConversationId)
+                    .Where(m => m.ConversationId == row.totals.ConversationId)
                     .Select(m => m.Model)
                     .Order()),
-                row.ModelCalls,
-                row.PromptTokens,
-                row.CompletionTokens,
-                row.ToolCalls,
-                row.CostEur))
+                row.totals.ModelCalls,
+                row.totals.PromptTokens,
+                row.totals.CompletionTokens,
+                row.totals.ToolCalls,
+                row.totals.CostEur))
             .ToList());
     }
 

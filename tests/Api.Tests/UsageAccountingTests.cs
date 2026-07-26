@@ -125,13 +125,80 @@ public class UsageAccountingTests(ApiFactory factory) : IClassFixture<ApiFactory
         Assert.Equal(ScriptedChatClient.ScriptedModelId, row.Models);
     }
 
+    /// <summary>
+    /// The list and the detail must agree about when a conversation started. They read it from
+    /// different places, and the frozen test clock hides the difference: in production the first
+    /// usage row is written after the first model call answers, a second or two after the
+    /// conversation row. So the gap is created here on purpose.
+    /// </summary>
+    [Fact]
+    public async Task The_list_and_the_detail_agree_on_when_a_conversation_started()
+    {
+        factory.Model.Script([new TextContent("Hello.")]);
+
+        using var client = await factory.ClientForAsync("ana@demo");
+        var conversationId = await ChatAsync(client, "hi");
+
+        DateTimeOffset conversationStarted;
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var conversation = await db.Conversations.SingleAsync(c => c.Id == conversationId);
+            conversationStarted = conversation.CreatedAt;
+
+            // The latency the frozen clock removed, put back.
+            foreach (var record in await db.UsageRecords.Where(r => r.ConversationId == conversationId).ToListAsync())
+            {
+                db.Entry(record).Property(r => r.CreatedAt).CurrentValue = record.CreatedAt.AddSeconds(2);
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        var row = Assert.Single(
+            (await client.GetFromJsonAsync<List<RowPayload>>("/api/usage/conversations"))!,
+            r => r.ConversationId == conversationId);
+        var detail = await client.GetFromJsonAsync<DetailPayload>($"/api/usage/conversations/{conversationId}");
+
+        Assert.Equal(conversationStarted, row.StartedAt);
+        Assert.Equal(conversationStarted, detail!.StartedAt);
+    }
+
+    /// <summary>
+    /// A model with no entry in <c>Usage:Prices</c> is recorded at zero rather than at a guessed
+    /// price, and says so — the warning and its metric are the only thing standing between that
+    /// call and spend the kill switch cannot see (ADR 008).
+    /// </summary>
     [Fact]
     public async Task A_model_without_a_configured_price_is_recorded_at_zero_and_flagged()
     {
-        using var scope = factory.Services.CreateScope();
-        var options = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<UsageOptions>>();
+        using var unpriced = new UnpricedModelFactory();
+        unpriced.Model.Script([new TextContent("Hello.")]);
 
-        Assert.Null(options.Value.PriceFor("some-model-nobody-priced"));
+        using var client = await unpriced.ClientForAsync("ana@demo");
+        var conversationId = await ChatAsync(client, "hi");
+
+        using var scope = unpriced.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var record = await db.UsageRecords.SingleAsync(r => r.ConversationId == conversationId);
+
+        // The call is still on the ledger, with its tokens — only the price is missing.
+        Assert.Equal(ScriptedChatClient.ScriptedModelId, record.Model);
+        Assert.Equal(ScriptedChatClient.PromptTokensPerCall, record.PromptTokens);
+        Assert.Equal(0m, record.CostEur);
+
+        Assert.Contains(
+            unpriced.Logs.Records,
+            entry => entry.Contains("No price configured", StringComparison.Ordinal)
+                && entry.Contains(ScriptedChatClient.ScriptedModelId, StringComparison.Ordinal));
+    }
+
+    /// <summary>Boots the app with a price sheet that does not mention the scripted model.</summary>
+    private sealed class UnpricedModelFactory : ApiFactory
+    {
+        protected override IReadOnlyDictionary<string, string?> ExtraConfiguration =>
+            new Dictionary<string, string?> { ["Usage:Prices:0:Model"] = "a-model-nobody-calls" };
     }
 
     private static async Task<Guid> ChatAsync(HttpClient client, string message)
@@ -163,6 +230,7 @@ public class UsageAccountingTests(ApiFactory factory) : IClassFixture<ApiFactory
 
     private sealed record RowPayload(
         Guid ConversationId,
+        DateTimeOffset StartedAt,
         string UserEmail,
         string Models,
         int ModelCalls,
@@ -174,6 +242,7 @@ public class UsageAccountingTests(ApiFactory factory) : IClassFixture<ApiFactory
 
     private sealed record DetailPayload(
         Guid ConversationId,
+        DateTimeOffset StartedAt,
         int ModelCalls,
         decimal CostEur,
         List<CallPayload> Calls,
