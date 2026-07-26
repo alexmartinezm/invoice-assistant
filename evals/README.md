@@ -27,3 +27,27 @@ and stops with a failure if the run exceeds its token budget (`EVALS_RUN_TOKEN_B
 The harness also tests itself: `HarnessSelfTests` runs the whole machinery against a scripted
 model on every plain `dotnet test`, credentials or not, so the first real run in CI is never the
 first run ever.
+
+## Who can run the suite in CI
+
+This is a public repository and the evals job is the only job that costs money, so it is gated:
+the provider is called only when the run was triggered by the repository owner from a branch of
+this repository. Any other pull request still runs the job — its check has to be reported for
+`evals` to work as a required check — but the gate closes and the run ends green with a warning
+in the job summary explaining why.
+
+The gate is a convenience, not the security boundary. GitHub never hands secrets to a workflow
+run from a fork, which is what actually keeps eval credentials out of a stranger's pull request;
+the explicit check adds an owner-only rule on top, for accounts that are later given write
+access. Two settings back it up, and neither lives in this repository:
+
+- **Settings → Actions → General → Fork pull request workflows**: require approval for all
+  external contributors, so a fork's PR does not even burn runner minutes unreviewed.
+- **Settings → Environments**: an `evals` environment holding the provider secrets, with the
+  owner as a required reviewer. Environment protection is repository configuration rather than
+  workflow code, so it survives a pull request that edits `ci.yml` — the one control the gate
+  in the workflow cannot give you. The cost is that the check waits on a manual approval.
+
+Because evals are skipped on outside contributions, a green `evals` check on such a pull request
+means "not run", not "passed". Before merging one that touches `prompts/`, `policies.json`,
+`evals/` or the assistant slice, push the branch into this repository and let the suite run.
