@@ -111,7 +111,7 @@ export function LoginPage() {
         {error && (
           <p
             role="alert"
-            className="text-aging-over border-aging-over mt-4 rounded-md border px-4 py-3 text-sm"
+            className="text-danger border-danger mt-4 rounded-md border px-4 py-3 text-sm"
           >
             {error}
           </p>

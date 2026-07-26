@@ -161,10 +161,7 @@ function Turn({ item, streaming }: { item: ChatItem; streaming: boolean }) {
       {awaitingFirstToken && <p className="caret text-ink-faint text-sm" />}
 
       {item.failure && (
-        <p
-          role="alert"
-          className="border-aging-over text-aging-over rounded-md border px-3 py-2 text-sm"
-        >
+        <p role="alert" className="border-danger text-danger rounded-md border px-3 py-2 text-sm">
           {item.failure}
         </p>
       )}
@@ -176,8 +173,14 @@ function Turn({ item, streaming }: { item: ChatItem; streaming: boolean }) {
 function ToolChip({ run }: { run: ToolRun }) {
   return (
     <p className="slide-in text-ink-soft flex items-center gap-2 font-mono text-xs">
+      {/*
+        Neutral while running, accent once done. The pulse alone would not carry it: under
+        prefers-reduced-motion it stops, so the two states have to differ in colour as well.
+      */}
       <span
-        className={`h-1.5 w-1.5 rounded-full ${run.finished ? 'bg-accent' : 'bg-aging-30 animate-pulse'}`}
+        className={`h-1.5 w-1.5 rounded-full ${
+          run.finished ? 'bg-accent' : 'bg-ink-faint animate-pulse'
+        }`}
       />
       {run.label}
       <span className="text-ink-faint">{run.tool}</span>

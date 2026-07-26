@@ -26,10 +26,15 @@
   --accent-soft: #dcefe9;
   --accent-ink: #0a4a40;
 
+  /* A data scale, reserved for how late money is. Never borrowed for a general-purpose red. */
   --aging-current: #0f6b5c;
   --aging-30: #b0730d;
   --aging-60: #bd5518;
   --aging-over: #a3311d;
+
+  /* Failures and refusals: an error, and from F2 a policy-denied action. */
+  --danger: #a32f2f;
+  --danger-soft: #f7e5e2;
 
   --shadow-card: 0 1px 2px rgb(26 23 20 / 4%), 0 8px 24px -16px rgb(26 23 20 / 24%);
 }
@@ -53,6 +58,9 @@
     --aging-30: #d69b3c;
     --aging-60: #dd8149;
     --aging-over: #d9645a;
+
+    --danger: #e5776e;
+    --danger-soft: #351f1d;
 
     --shadow-card: 0 1px 2px rgb(0 0 0 / 32%), 0 10px 28px -18px rgb(0 0 0 / 70%);
   }
@@ -78,6 +86,8 @@
   --color-aging-30: var(--aging-30);
   --color-aging-60: var(--aging-60);
   --color-aging-over: var(--aging-over);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
 
   --shadow-card: var(--shadow-card);
 }

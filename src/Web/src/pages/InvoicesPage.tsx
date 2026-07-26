@@ -92,10 +92,7 @@ export function InvoicesPage() {
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
       {error && (
-        <p
-          role="alert"
-          className="border-aging-over text-aging-over rounded-md border px-4 py-3 text-sm"
-        >
+        <p role="alert" className="border-danger text-danger rounded-md border px-4 py-3 text-sm">
           {error}
         </p>
       )}
