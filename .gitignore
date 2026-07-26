@@ -1,0 +1,26 @@
+# Secrets
+.env
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
+
+# Node / Vite
+node_modules/
+dist/
+*.local
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# IDE / OS
+.idea/
+.DS_Store
+
+# Test & eval output
+TestResults/
+evals/reports/

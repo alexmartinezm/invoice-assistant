@@ -1,0 +1,13 @@
+{
+  "defaults": { "read": "allow", "write": "require_confirmation" },
+  "rules": [
+    { "tool": "mark_invoice_paid", "minRole": "Accountant", "maxAmount": 100, "action": "allow" },
+    { "sideEffect": "write", "role": "Viewer", "action": "deny" },
+    { "tool": "cancel_invoice", "action": "require_confirmation", "always": true }
+  ],
+  "limits": {
+    "maxWritesPerTurn": 1,
+    "maxWritesPerConversation": 5,
+    "maxToolCallsPerTurn": 8
+  }
+}
