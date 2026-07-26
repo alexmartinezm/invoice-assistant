@@ -10,6 +10,8 @@ namespace Api.Assistant;
 [JsonDerivedType(typeof(ConversationStarted), "conversation")]
 [JsonDerivedType(typeof(ToolActivity), "activity")]
 [JsonDerivedType(typeof(TextToken), "token")]
+[JsonDerivedType(typeof(ApprovalRequired), "approval_required")]
+[JsonDerivedType(typeof(ToolBlocked), "blocked")]
 [JsonDerivedType(typeof(TurnCompleted), "done")]
 [JsonDerivedType(typeof(TurnFailed), "error")]
 public abstract record ChatEvent
@@ -33,6 +35,28 @@ public sealed record ToolActivity(string Tool, string Phase, string Label) : Cha
 public sealed record TextToken(string Text) : ChatEvent
 {
     public override string EventName => "token";
+}
+
+/// <summary>
+/// A write the assistant proposed and cannot perform on its own. Carries everything the approval
+/// card needs, including the deadline — an approval the user cannot see expiring is a trap.
+/// </summary>
+public sealed record ApprovalRequired(
+    Guid ActionId,
+    string Tool,
+    string Summary,
+    DateTimeOffset ExpiresAt) : ChatEvent
+{
+    public override string EventName => "approval_required";
+}
+
+/// <summary>
+/// A call the gate refused outright — denied by policy, or over a per-turn limit. Separate from
+/// <see cref="TurnFailed"/> because nothing went wrong: the system did exactly its job.
+/// </summary>
+public sealed record ToolBlocked(string Tool, string Reason) : ChatEvent
+{
+    public override string EventName => "blocked";
 }
 
 public sealed record TurnCompleted(Guid ConversationId, string TraceId) : ChatEvent

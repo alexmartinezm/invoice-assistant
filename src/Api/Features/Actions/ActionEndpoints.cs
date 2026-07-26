@@ -1,0 +1,238 @@
+using System.Security.Claims;
+using System.Text.Json;
+using Api.Assistant;
+using Api.Assistant.Tools;
+using Api.Domain;
+using Api.Features.Auth;
+using Api.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+
+namespace Api.Features.Actions;
+
+/// <summary>What became of a proposal, and the line the conversation closes on.</summary>
+public sealed record ActionOutcome(
+    Guid ActionId,
+    string Status,
+    string Summary,
+    string Message,
+    JsonElement? Result);
+
+/// <summary>
+/// Approving or rejecting a write the assistant proposed.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Approval runs inside the approver's own request, so the tool call goes out under the approver's
+/// token exactly as a first-hand call would (ADR 002) and policy is re-evaluated against the
+/// approver's role (ADR 001). The arguments come from the pending row, never from the request body:
+/// the person agreed to a specific sentence, and that is what runs.
+/// </para>
+/// <para>
+/// The closing line is written here rather than by the model (ADR 007). The assistant is not asked
+/// to narrate what happened to somebody's money — the server knows, and a sentence the server wrote
+/// cannot be wrong about it.
+/// </para>
+/// </remarks>
+public static class ActionEndpoints
+{
+    public static IEndpointRouteBuilder MapActionEndpoints(this IEndpointRouteBuilder routes)
+    {
+        var group = routes.MapGroup("/api/actions").WithTags("Assistant").RequireAuthorization();
+
+        group.MapGet("/{id:guid}", GetAsync);
+        group.MapPost("/{id:guid}/approve", ApproveAsync);
+        group.MapPost("/{id:guid}/reject", RejectAsync);
+
+        return routes;
+    }
+
+    private static async Task<IResult> GetAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        var action = await db.PendingActions.AsNoTracking()
+            .SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
+
+        if (action is null || !MayResolve(principal, action))
+        {
+            return NotFound(id);
+        }
+
+        return Results.Ok(new
+        {
+            actionId = action.Id,
+            tool = action.ToolName,
+            summary = action.Summary,
+            status = Describe(action, clock.UtcNow),
+            expiresAt = action.ExpiresAt,
+        });
+    }
+
+    private static async Task<IResult> ApproveAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        ToolGate gate,
+        IClock clock,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory.CreateLogger(typeof(ActionEndpoints));
+        var approverId = principal.Id();
+        var now = clock.UtcNow;
+
+        var action = await db.PendingActions.SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
+        if (action is null || !MayResolve(principal, action))
+        {
+            return NotFound(id);
+        }
+
+        if (!action.IsOpen(now))
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return Closed(action, clock.UtcNow);
+        }
+
+        using var args = JsonDocument.Parse(action.ArgsJson);
+        var (tool, call) = WriteToolPlans.Replay(action.ToolName, args.RootElement);
+
+        var decision = await gate.AuthoriseApprovalAsync(tool, args.RootElement, principal.Role(), cancellationToken);
+        if (decision.Action is PolicyAction.Deny)
+        {
+            action.TryReject(approverId, now);
+            await gate.AuditAsync(
+                approverId, tool, args.RootElement, AuditDecision.Denied, decision.Reason, action.ConversationId, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+
+            return Results.Problem(
+                title: "Not permitted",
+                detail: decision.Reason,
+                statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = "policy_denied" });
+        }
+
+        // Claimed before it runs, and saved immediately: two tabs clicking approve at once means one
+        // of them loses the race here rather than both reaching the API.
+        if (!action.TryApprove(approverId, now))
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return Closed(action, clock.UtcNow);
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        // The action's own id is the idempotency key, so replaying an approval — a retry, a double
+        // click that got past the claim — cannot perform the write twice.
+        var result = await gate.ExecuteAsync(call, action.Id.ToString(), cancellationToken);
+        var failed = result.ValueKind is JsonValueKind.Object && result.TryGetProperty("error", out _);
+
+        await gate.AuditAsync(
+            approverId,
+            tool,
+            args.RootElement,
+            failed ? AuditDecision.Denied : AuditDecision.Confirmed,
+            failed ? $"Approved, then refused by the API: {result.GetRawText()}" : decision.Reason,
+            action.ConversationId,
+            cancellationToken);
+
+        if (failed)
+        {
+            // The layered-defence case: a person said yes and the server still said no. Worth
+            // logging loudly, because it is the interesting one.
+            logger.LogWarning("Approved action {ActionId} was refused by the API: {Result}", action.Id, result.GetRawText());
+        }
+
+        var message = failed
+            ? $"{action.Summary} — approved, but the API refused it. Nothing changed."
+            : $"Done: {action.Summary.ToLowerFirst()}.";
+
+        await RecordClosingLineAsync(db, action, message, clock, cancellationToken);
+
+        return Results.Ok(new ActionOutcome(
+            action.Id, failed ? "failed" : "approved", action.Summary, message, result));
+    }
+
+    private static async Task<IResult> RejectAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        var now = clock.UtcNow;
+
+        var action = await db.PendingActions.SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
+        if (action is null || !MayResolve(principal, action))
+        {
+            return NotFound(id);
+        }
+
+        if (!action.TryReject(principal.Id(), now))
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return Closed(action, clock.UtcNow);
+        }
+
+        var message = $"Cancelled: {action.Summary.ToLowerFirst()}. Nothing was changed.";
+        await RecordClosingLineAsync(db, action, message, clock, cancellationToken);
+
+        return Results.Ok(new ActionOutcome(action.Id, "rejected", action.Summary, message, null));
+    }
+
+    /// <summary>
+    /// Appends the outcome to the conversation as an assistant message, so the next turn's history
+    /// contains what actually happened rather than a proposal that trails off.
+    /// </summary>
+    private static async Task RecordClosingLineAsync(
+        AppDbContext db,
+        PendingAction action,
+        string message,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        if (action.ConversationId is { } conversationId)
+        {
+            db.Set<Message>().Add(new Message
+            {
+                ConversationId = conversationId,
+                Role = MessageRole.Assistant,
+                Content = message,
+                CreatedAt = clock.UtcNow,
+            });
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Whoever proposed it, or an Admin. The role needed to <em>run</em> the tool is checked
+    /// separately at approval time; this is only about who can see the proposal at all.
+    /// </summary>
+    private static bool MayResolve(ClaimsPrincipal principal, PendingAction action) =>
+        action.UserId == principal.Id() || principal.Role() is Role.Admin;
+
+    private static string Describe(PendingAction action, DateTimeOffset now) =>
+        action.IsOpen(now) ? "pending" : action.Status.ToString().ToLowerInvariant();
+
+    private static IResult Closed(PendingAction action, DateTimeOffset now) => Results.Problem(
+        title: "Action is no longer open",
+        detail: $"This action is {Describe(action, now)}. Ask the assistant again if you still want it done.",
+        statusCode: StatusCodes.Status409Conflict,
+        extensions: new Dictionary<string, object?>
+        {
+            ["code"] = "action_not_open",
+            ["status"] = Describe(action, now),
+        });
+
+    private static IResult NotFound(Guid id) => Results.Problem(
+        title: "Action not found",
+        detail: $"There is no pending action with id '{id}'.",
+        statusCode: StatusCodes.Status404NotFound,
+        extensions: new Dictionary<string, object?> { ["code"] = "action_not_found" });
+
+    private static string ToLowerFirst(this string value) =>
+        value.Length == 0 ? value : char.ToLowerInvariant(value[0]) + value[1..];
+}

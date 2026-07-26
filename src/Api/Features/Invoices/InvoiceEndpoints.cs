@@ -17,11 +17,18 @@ public static class InvoiceEndpoints
         group.MapGet("/", ListAsync);
         group.MapGet("/{number}", GetAsync);
 
-        group.MapPost("/", CreateDraftAsync).RequireAuthorization(Policies.Accountant);
-        group.MapPost("/{number}/send", SendAsync).RequireAuthorization(Policies.Accountant);
-        group.MapPost("/{number}/mark-paid", MarkPaidAsync).RequireAuthorization(Policies.Accountant);
-        group.MapPatch("/{number}/due-date", UpdateDueDateAsync).RequireAuthorization(Policies.Accountant);
-        group.MapPost("/{number}/cancel", CancelAsync).RequireAuthorization(Policies.Admin);
+        // Writes accept an Idempotency-Key so a retry — by the assistant, by the HTTP stack, or by a
+        // user clicking approve twice — returns the first answer instead of doing the work again.
+        var writes = routes.MapGroup("/api/invoices")
+            .WithTags("Invoices")
+            .RequireAuthorization()
+            .AddEndpointFilter<IdempotencyFilter>();
+
+        writes.MapPost("/", CreateDraftAsync).RequireAuthorization(Policies.Accountant);
+        writes.MapPost("/{number}/send", SendAsync).RequireAuthorization(Policies.Accountant);
+        writes.MapPost("/{number}/mark-paid", MarkPaidAsync).RequireAuthorization(Policies.Accountant);
+        writes.MapPatch("/{number}/due-date", UpdateDueDateAsync).RequireAuthorization(Policies.Accountant);
+        writes.MapPost("/{number}/cancel", CancelAsync).RequireAuthorization(Policies.Admin);
 
         return routes;
     }

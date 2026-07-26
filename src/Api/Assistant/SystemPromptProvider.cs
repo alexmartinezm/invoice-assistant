@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Text;
 using Api.Features.Invoices;
+using Api.Infrastructure;
 using Microsoft.Extensions.Options;
 
 namespace Api.Assistant;
@@ -27,7 +28,7 @@ public sealed partial class SystemPromptProvider
         IOptions<InvoicingOptions> invoicing,
         IHostEnvironment environment)
     {
-        var path = Resolve(options.Value.SystemPromptPath, environment.ContentRootPath)
+        var path = RepositoryFile.Find(options.Value.SystemPromptPath, RelativePath, environment.ContentRootPath)
             ?? throw new FileNotFoundException(
                 $"Could not find '{RelativePath}'. Set Assistant:SystemPromptPath to point at it.");
 
@@ -100,28 +101,4 @@ public sealed partial class SystemPromptProvider
 
     [GeneratedRegex("d+|M+|y+")]
     private static partial Regex DateFieldPattern();
-
-    private static string? Resolve(string? configured, string contentRoot)
-    {
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return File.Exists(configured) ? configured : null;
-        }
-
-        // Walk up from the content root and from the binaries: the first covers `dotnet run` from
-        // the repo, the second a published layout where the prompt sits next to the app.
-        foreach (var start in new[] { contentRoot, AppContext.BaseDirectory })
-        {
-            for (var directory = new DirectoryInfo(start); directory is not null; directory = directory.Parent)
-            {
-                var candidate = System.IO.Path.Combine(directory.FullName, RelativePath);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-        }
-
-        return null;
-    }
 }

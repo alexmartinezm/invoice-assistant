@@ -1,4 +1,3 @@
-using Api.Domain;
 using Microsoft.Extensions.AI;
 
 namespace Api.Assistant.Tools;
@@ -8,19 +7,26 @@ namespace Api.Assistant.Tools;
 /// administration tool: whatever is not declared here is unreachable no matter what the model is
 /// asked to do. The first line of defence is the size of this list, not the wording of the prompt.
 /// </summary>
+/// <remarks>
+/// The write tools are here from F2 onwards, which does not widen that boundary — every one of them
+/// runs through <see cref="ToolGate"/>, and each affects exactly one invoice that the caller names.
+/// </remarks>
 public sealed class ToolCatalog
 {
-    public ToolCatalog(ReadTools readTools)
+    public ToolCatalog(ReadTools readTools, WriteTools writeTools)
     {
         Tools =
         [
-            Read(readTools.ListInvoicesAsync, "list_invoices"),
-            Read(readTools.GetInvoiceAsync, "get_invoice"),
-            Read(readTools.SearchCustomersAsync, "search_customers"),
-            Read(readTools.GetReceivablesSummaryAsync, "get_receivables_summary"),
+            Define(readTools.ListInvoicesAsync, ReadToolCatalog.ListInvoices, ToolRiskLevel.Low),
+            Define(readTools.GetInvoiceAsync, ReadToolCatalog.GetInvoice, ToolRiskLevel.Low),
+            Define(readTools.SearchCustomersAsync, ReadToolCatalog.SearchCustomers, ToolRiskLevel.Low),
+            Define(readTools.GetReceivablesSummaryAsync, ReadToolCatalog.GetReceivablesSummary, ToolRiskLevel.Low),
 
-            // F2 adds the write tools here: create_draft_invoice, send_invoice,
-            // mark_invoice_paid, cancel_invoice and update_due_date.
+            Define(writeTools.CreateDraftInvoiceAsync, WriteToolCatalog.CreateDraftInvoice, ToolRiskLevel.Medium),
+            Define(writeTools.SendInvoiceAsync, WriteToolCatalog.SendInvoice, ToolRiskLevel.Medium),
+            Define(writeTools.MarkInvoicePaidAsync, WriteToolCatalog.MarkInvoicePaid, ToolRiskLevel.High),
+            Define(writeTools.CancelInvoiceAsync, WriteToolCatalog.CancelInvoice, ToolRiskLevel.High),
+            Define(writeTools.UpdateDueDateAsync, WriteToolCatalog.UpdateDueDate, ToolRiskLevel.Medium),
         ];
     }
 
@@ -32,12 +38,13 @@ public sealed class ToolCatalog
         Tools.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.Ordinal));
 
     /// <summary>
-    /// Read tools carry no side effect, so the default policy auto-executes them and every
-    /// authenticated role may call them — the endpoint behind each one still filters by identity.
+    /// Binds a delegate to the identity the gate evaluates it under. One identity per tool, shared
+    /// with <see cref="ToolGate"/>, so the name in the model's schema and the name a policy rule
+    /// matches on cannot drift apart.
     /// </summary>
-    private static ToolDefinition Read(Delegate method, string name) => new(
-        AIFunctionFactory.Create(method, new AIFunctionFactoryOptions { Name = name }),
-        ToolSideEffect.Read,
-        Role.Viewer,
-        ToolRiskLevel.Low);
+    private static ToolDefinition Define(Delegate method, ToolIdentity identity, ToolRiskLevel risk) => new(
+        AIFunctionFactory.Create(method, new AIFunctionFactoryOptions { Name = identity.Name }),
+        identity.SideEffect,
+        identity.RequiredRole,
+        risk);
 }

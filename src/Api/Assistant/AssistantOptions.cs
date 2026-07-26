@@ -13,6 +13,9 @@ public sealed class AssistantOptions
     /// <summary>Path to <c>prompts/system.md</c>. Empty means "find it by walking up from the app".</summary>
     public string? SystemPromptPath { get; set; }
 
+    /// <summary>Path to <c>policies.json</c>. Empty means "find it by walking up from the app".</summary>
+    public string? PolicyPath { get; set; }
+
     /// <summary>How many past messages are replayed to the model. Bounds cost and context window.</summary>
     public int HistoryMessages { get; set; } = 20;
 
@@ -20,11 +23,8 @@ public sealed class AssistantOptions
 
     public int MaxOutputTokens { get; set; } = 800;
 
-    /// <summary>
-    /// Loop brake: a model that keeps chaining reads without converging gets cut off. In F2 this
-    /// limit moves into <c>policies.json</c> together with the write limits.
-    /// </summary>
-    public int MaxToolCallsPerTurn { get; set; } = 8;
+    // maxToolCallsPerTurn used to live here. It is in policies.json with the other limits now:
+    // one file holds every ceiling the assistant runs under, and it is reviewable without a build.
 
     /// <summary>Chat turns allowed per user per minute. Every turn costs money.</summary>
     public int TurnsPerMinute { get; set; } = 20;
