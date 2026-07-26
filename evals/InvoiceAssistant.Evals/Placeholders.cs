@@ -25,11 +25,26 @@ namespace InvoiceAssistant.Evals;
 /// </remarks>
 public sealed partial class Placeholders(EvalHost host)
 {
+    private readonly Dictionary<string, string> _resolved = [];
+
+    /// <summary>
+    /// Starts a fresh resolution scope. Within one attempt a placeholder always resolves to the
+    /// same value — the prompt and the expected arguments must be talking about the same invoice —
+    /// while a retry re-resolves from scratch, so the fixture-creating placeholders stay
+    /// independent of what a failed first attempt left behind.
+    /// </summary>
+    public void BeginAttempt() => _resolved.Clear();
+
     public async Task<string> ApplyAsync(string text)
     {
         foreach (var name in Pattern().Matches(text).Select(m => m.Groups[1].Value).Distinct())
         {
-            text = text.Replace($"{{{{{name}}}}}", await ResolveAsync(name), StringComparison.Ordinal);
+            if (!_resolved.TryGetValue(name, out var value))
+            {
+                _resolved[name] = value = await ResolveAsync(name);
+            }
+
+            text = text.Replace($"{{{{{name}}}}}", value, StringComparison.Ordinal);
         }
 
         return text;

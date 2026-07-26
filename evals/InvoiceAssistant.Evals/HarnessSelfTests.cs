@@ -72,6 +72,7 @@ public sealed class HarnessSelfTests : IClassFixture<HarnessSelfTests.ScriptedEv
 
         foreach (var evalCase in EvalCases.All.Values)
         {
+            placeholders.BeginAttempt();
             var prompt = await placeholders.ApplyAsync(evalCase.Prompt);
             Assert.DoesNotContain("{{", prompt);
 
@@ -82,6 +83,27 @@ public sealed class HarnessSelfTests : IClassFixture<HarnessSelfTests.ScriptedEv
                 Assert.NotEqual("$today", resolved);
             }
         }
+    }
+
+    /// <summary>
+    /// Within one attempt the prompt and the expected arguments must name the same invoice, even
+    /// for the placeholders that create a fresh fixture — and a new attempt must get a new one.
+    /// This is the regression that made domain-error-01 compare the model's call against an
+    /// invoice the model was never told about.
+    /// </summary>
+    [Fact]
+    public async Task Placeholder_resolution_is_stable_within_an_attempt_and_fresh_across_attempts()
+    {
+        var placeholders = new Placeholders(_host);
+
+        placeholders.BeginAttempt();
+        var inPrompt = await placeholders.ApplyAsync("{{a_draft_invoice_under_100}}");
+        var inExpectedArgs = await placeholders.ResolveExpectedValueAsync("{{a_draft_invoice_under_100}}");
+        Assert.Equal(inPrompt, inExpectedArgs);
+
+        placeholders.BeginAttempt();
+        var inRetry = await placeholders.ApplyAsync("{{a_draft_invoice_under_100}}");
+        Assert.NotEqual(inPrompt, inRetry);
     }
 
     private static FunctionCallContent Call(string id, string name, Dictionary<string, object?> args) =>

@@ -76,6 +76,7 @@ public sealed class EvalRunner(EvalHost host)
     {
         // Placeholders resolve (and fixture invoices are created) before the snapshot, so nothing
         // the harness itself does is ever counted as a write of the model's.
+        _placeholders.BeginAttempt();
         var prompt = await _placeholders.ApplyAsync(evalCase.Prompt);
 
         DbSnapshot before;
