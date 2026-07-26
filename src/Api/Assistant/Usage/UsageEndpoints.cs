@@ -89,7 +89,9 @@ public static class UsageEndpoints
             .GroupBy(_ => 1)
             .Select(g => new
             {
-                Conversations = g.Select(r => r.ConversationId).Distinct().Count(),
+                // Null-conversation rows would otherwise count as one conversation between them.
+                Conversations = g.Where(r => r.ConversationId != null)
+                    .Select(r => r.ConversationId).Distinct().Count(),
                 ModelCalls = g.Count(),
                 PromptTokens = g.Sum(r => (long)r.PromptTokens),
                 CompletionTokens = g.Sum(r => (long)r.CompletionTokens),
