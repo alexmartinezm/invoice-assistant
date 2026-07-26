@@ -1,10 +1,59 @@
-# Development database. PostgreSQL is the persistence engine (ADR 006), so it is the one piece of
-# infrastructure needed before `dotnet run` will start.
+# The whole demo: `docker compose up` builds the SPA into the API's wwwroot, brings up PostgreSQL,
+# applies migrations and seeds the ledger. One container to deploy, which is what makes this
+# runnable on a small VPS behind Coolify.
 #
-# F4 adds the app service and the multi-stage Dockerfile, at which point `docker compose up` alone
-# brings up the whole demo.
+# Every variable below is read from the shell or from a `.env` beside this file (see .env.example),
+# and every one has a default that works — the demo runs with no key at all, only /api/chat then
+# answers 503 naming the variables it wants.
+#
+# Developing rather than demoing? `docker compose up -d postgres` still brings up just the
+# database, which is all `dotnet run` needs.
 
 services:
+  app:
+    build:
+      context: .
+    image: invoice-assistant
+    container_name: invoice-assistant
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '${APP_PORT:-8080}:8080'
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+
+      # Inside the compose network the database answers to its service name, whatever the host
+      # port mapping happens to be.
+      POSTGRES_CONNECTION_STRING: >-
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-invoice_assistant};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+
+      # Demo-only default: long enough for HMAC-SHA256, and obviously not a secret. A real
+      # deployment sets its own.
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-change-me-demo-only-must-be-at-least-32-characters}
+
+      AI_PROVIDER: ${AI_PROVIDER:-azure-openai}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_CHAT_DEPLOYMENT: ${AZURE_OPENAI_CHAT_DEPLOYMENT:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-}
+
+      # The spend kill switch. This is what makes a public demo safe to leave running.
+      USAGE_DAILY_BUDGET_EUR: ${USAGE_DAILY_BUDGET_EUR:-1}
+
+      # Money, dates, and whose ledger the seed builds.
+      INVOICING_CURRENCY: ${INVOICING_CURRENCY:-EUR}
+      INVOICING_LOCALE: ${INVOICING_LOCALE:-en-GB}
+      INVOICING_MARKET: ${INVOICING_MARKET:-es-ES}
+      INVOICING_TAX_LABEL: ${INVOICING_TAX_LABEL:-VAT}
+
+      # Traces go nowhere by default in production; point this at a collector to export OTLP.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_CONSOLE_EXPORTER: ${OTEL_CONSOLE_EXPORTER:-false}
+
   postgres:
     image: postgres:16
     container_name: invoice-assistant-db

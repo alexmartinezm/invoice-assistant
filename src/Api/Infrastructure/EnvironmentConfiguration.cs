@@ -17,6 +17,7 @@ public static class EnvironmentConfiguration
         ("OPENAI_API_KEY", "AI:OpenAiApiKey"),
         ("CHAT_MODEL", "AI:ChatModel"),
         ("JWT_SIGNING_KEY", "Jwt:SigningKey"),
+        ("USAGE_DAILY_BUDGET_EUR", "Usage:DailyBudgetEur"),
         ("ASSISTANT_API_BASE_URL", "Assistant:ApiBaseUrl"),
         ("INVOICING_CURRENCY", "Invoicing:Currency"),
         ("INVOICING_CURRENCY_SYMBOL", "Invoicing:CurrencySymbol"),

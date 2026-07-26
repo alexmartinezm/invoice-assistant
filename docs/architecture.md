@@ -20,6 +20,12 @@ Added by the write gate (F2), and deliberately not created before there was anyt
 - **PendingAction**: id, userId, toolName, argsJson, summary, createdAt, expiresAt, status (`pending|approved|rejected|expired`).
 - **IdempotencyRecord**: key, userId, operation, statusCode, response (json), createdAt — one write, remembered for 24 hours, so a retry returns the first answer.
 
+Added by cost accounting (F4):
+
+- **UsageRecord**: conversationId?, userId, model, promptTokens, completionTokens, toolCallCount,
+  costEur, latencyMs, createdAt — one row per **model call**, not per turn, because a turn that uses
+  tools makes several (ADR 008).
+
 An allowed **read** produces no `AuditEvent`. That is deliberate: it keeps `auto` meaning exactly
 "a change happened and nobody approved it", which is the thing `evals/cases/injection-03.yaml`
 asserts the absence of. A read the gate *refuses* is audited — see ADR 007.
@@ -127,6 +133,7 @@ Classic REST with role-based authZ on every endpoint (the assistant's write gate
 - `PATCH /api/invoices/{number}/due-date`
 - `GET /api/reports/receivables` (aging buckets: current, 1-30, 31-60, 60+)
 - `POST /api/chat` (SSE) · `GET /api/assistant/tools`
+- `GET /api/usage/summary?from=&to=` · `GET /api/usage/conversations` · `GET /api/usage/conversations/{id}`
 
 Query semantics worth stating once, because the tool descriptions depend on them: `status` accepts
 only the four persisted values, `overdue=true` selects invoices that were sent and are past due, and
@@ -146,12 +153,12 @@ is not something to do twice because a socket hiccuped. The same key on a *diffe
 
 ## Anatomy of a chat turn
 
-As it stands after F2, with step 5 still to come:
-
 ```text
 UI ──POST /api/chat (SSE)──► ChatOrchestrator
+        │ 0. daily budget check → 429 daily_budget_exhausted if it is spent   (F4)
         │ 1. loads history + system prompt (prompts/system.md, versioned)
         │ 2. IChatClient.GetStreamingResponseAsync with registered tools
+        │      └─ UsageCollector meters each model call and re-checks the budget  (F4)
         │ 3. every tool call, read or write, enters ToolGate:
         │      per-turn limits → ToolPolicyEngine.Evaluate(tool, args, role)
         │        ├─ Allow          → HTTP to our own API with the user's JWT; writes audit `auto`
@@ -159,8 +166,7 @@ UI ──POST /api/chat (SSE)──► ChatOrchestrator
         │        └─ Deny           → AuditEvent `denied` + SSE `blocked` → the model explains it
         │      a limit exceeded    → AuditEvent `blocked` + SSE `blocked`
         │      (a proposal spends the per-turn write budget too — ADR 007)
-        │ 4. text streaming + activity events, draining the journal after each tool result
-        └─ 5. UsageCollector records tokens/cost/latency for the turn      (F4)
+        └─ 4. text streaming + activity events, draining the journal after each tool result
 ```
 
 `ChatOrchestrator` reads top to bottom: load or create the conversation (recording the prompt hash),
@@ -220,6 +226,65 @@ sent to the model and in the eval cases under `evals/cases/`, so renaming one is
 touches more than the one invoice the caller names. Whatever is not in the catalog is physically
 impossible. The first line of defense is which tools you expose, not what you forbid in the prompt.
 
+## Cost, traces and the kill switch
+
+`UsageCollector` is an `IChatClient` sitting underneath the function-invoking client, so it sees
+every model call rather than every turn — a turn that uses tools makes several. Each call is
+recorded with its model, tokens, latency and cost in euros, priced from `Usage:Prices` (euros per
+million tokens, matched by longest model-id prefix). ADR 008 has the reasoning, including why an
+unpriced model is recorded at zero with a warning instead of a guessed price.
+
+The spend kill switch is a global daily cap, `Usage:DailyBudgetEur` (1€ by default), summed from
+`usage_records` for the current UTC day. It is enforced twice: `/api/chat` refuses with `429
+daily_budget_exhausted` before the stream starts, and the collector re-checks before every model
+call so a turn that crosses the line mid-flight stops there with an `error` event. The per-user rate
+limit protects against one impatient user; the euro cap is what protects against a scraper with many
+IPs, which is the difference that makes a public demo safe to leave running.
+
+| Endpoint | Answers |
+|---|---|
+| `GET /api/usage/summary?from=&to=` | Totals plus today's spend against the cap |
+| `GET /api/usage/conversations` | One row per conversation: calls, tools, tokens, cost |
+| `GET /api/usage/conversations/{id}` | The turn timeline: each model call interleaved with the gate's decisions |
+
+Everyone sees their own conversations; an Admin sees everyone's. The budget figures stay global on
+every view, because a per-user slice of one shared wallet would misstate how close the demo is to
+pausing. A conversation belonging to someone else answers `404`, the same as one that never existed.
+
+Traces: one trace per request, carrying `assistant.turn`, one `assistant.tool_call` per tool
+(tagged with the gate's decision — `allowed`, `pending_approval`, `denied` or `blocked`) and one
+`assistant.model_call` per call to the model (tagged with model, tokens, latency and cost).
+`assistant.tool_call` is the parent of the policy evaluation and of the outgoing API call.
+
+The decision is on the tool-call span rather than only on the policy span because a call stopped by
+a per-turn limit returns before the policy engine runs — that span is the only place a trace can
+explain it.
+
+Worth knowing before you open a trace viewer: **`assistant.turn` is a sibling of the tool and model
+spans, not their parent.** It is started inside an async iterator, so `Activity.Current` is restored
+when the method yields and everything the enumeration drives afterwards attaches to the ASP.NET
+request span instead. Everything shares the request's trace id — which is the id the chat footer
+shows, so correlation works and nothing is lost — but a turn cannot be collapsed as one subtree.
+Giving it real children means passing the turn's `ActivityContext` explicitly as the parent; it has
+not been done because the flat shape has been sufficient to read. Metrics are
+under the `InvoiceAssistant.Assistant` meter — model calls, tokens by direction, spend, budget
+rejections and unpriced calls. Console exporter in development, OTLP whenever
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. The chat footer shows the turn's trace id, which is the point:
+the id in the UI is the id in the collector.
+
+## Deployment
+
+One container. The multi-stage `Dockerfile` builds the SPA with node, copies it into the API's
+`wwwroot` and publishes the API around it; `policies.json` and `prompts/system.md` are copied beside
+the binary, where `RepositoryFile.Find` already looks. `docker compose up` brings up PostgreSQL and
+the app together, with a working default for every variable — the demo runs before anyone has a
+provider key, and only `/api/chat` answers 503 until they do.
+
+A public demo should sit behind basic auth at the proxy (Coolify or Traefik middleware), not in the
+app: the app's own auth is the JWT demo being demonstrated, and putting a second login in front of
+it inside the same codebase would confuse the thing on display. The daily cap is what makes leaving
+it up affordable.
+
 ## Cross-cutting security
 
 - AuthZ on every business endpoint: if someone calls the API without going through the assistant, the rules still apply.
@@ -228,7 +293,8 @@ impossible. The first line of defense is which tools you expose, not what you fo
 - Model output is rendered as sanitized markdown, never as raw HTML — and neither is invoice line text, which is customer-supplied.
 - Secrets only via environment variables; never user data in info-level logs.
 - Bounded conversation history and per-turn token budget.
-- Spend kill switch (F4): global daily cap in € evaluated before every model call; once reached, `/api/chat` returns 429.
+- Spend kill switch: global daily cap in € evaluated before every model call; once reached, `/api/chat` returns 429 and the rest of the app keeps working.
+- The container runs unprivileged (`USER $APP_UID`) and writes nothing to disk; all state is in PostgreSQL.
 
 ## Keeping the assistant honest
 

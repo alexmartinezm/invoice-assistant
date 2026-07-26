@@ -4,6 +4,7 @@ import { AppHeader } from './components/AppHeader';
 import { ChatDrawer } from './chat/ChatDrawer';
 import { InvoicesPage } from './pages/InvoicesPage';
 import { LoginPage } from './pages/LoginPage';
+import { UsagePage } from './pages/UsagePage';
 import { useAuth } from './auth/useAuth';
 
 export default function App() {
@@ -32,6 +33,7 @@ function SignedInApp() {
 
         <Routes>
           <Route path="/invoices" element={<InvoicesPage />} />
+          <Route path="/usage" element={<UsagePage />} />
           <Route path="*" element={<Navigate to="/invoices" replace />} />
         </Routes>
       </div>

@@ -20,6 +20,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
+    public DbSet<UsageRecord> UsageRecords => Set<UsageRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(user =>
@@ -137,6 +139,25 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             record.Property(r => r.Key).HasMaxLength(100);
             record.Property(r => r.Operation).HasMaxLength(200);
             record.Property(r => r.ResponseJson).HasColumnType("jsonb");
+        });
+
+        modelBuilder.Entity<UsageRecord>(usage =>
+        {
+            usage.ToTable("usage_records");
+            usage.HasKey(u => u.Id);
+
+            // The three questions asked of this table: "what did this conversation cost?" for the
+            // detail, "what has today cost?" for the daily kill switch, and "what has this user
+            // cost?" — which is every usage request that does not come from an Admin, so it is the
+            // common path rather than the rare one.
+            usage.HasIndex(u => u.ConversationId);
+            usage.HasIndex(u => u.CreatedAt);
+            usage.HasIndex(u => u.UserId);
+            usage.Property(u => u.Model).HasMaxLength(100);
+
+            // Six decimal places: a single small call costs fractions of a cent, and rounding
+            // those to two places would make the daily sum drift from what was actually spent.
+            usage.Property(u => u.CostEur).HasPrecision(12, 6);
         });
 
         // Identifiers are created in the domain, never by the database. Saying so explicitly also

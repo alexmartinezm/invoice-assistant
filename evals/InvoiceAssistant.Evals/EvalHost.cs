@@ -89,6 +89,9 @@ public class EvalHost : WebApplicationFactory<Program>
                 // The per-user rate limit protects a public demo's wallet, not the suite; at the
                 // suite's pace it would only add flakes.
                 ["Assistant:TurnsPerMinute"] = "1000",
+                // The run's brake is the harness's own token budget; the app's euro kill switch
+                // pausing the suite halfway through would only make a red build harder to read.
+                ["Usage:DailyBudgetEur"] = "1000",
                 ["OTEL_CONSOLE_EXPORTER"] = "false",
             }));
 
@@ -98,13 +101,9 @@ public class EvalHost : WebApplicationFactory<Program>
         {
             services.RemoveAll<IChatClient>();
 
-            // Same configure callback as the app, so the per-turn iteration cap under eval is the
-            // one policies.json ships.
-            services.AddChatClient(Recorder).UseFunctionInvocation(configure: client =>
-            {
-                client.MaximumIterationsPerRequest = Policy.Limits.MaxToolCallsPerTurn;
-                client.IncludeDetailedErrors = false;
-            });
+            // The app's own pipeline, so the per-turn iteration cap under eval is the one
+            // policies.json ships and every metered call lands in usage_records like production.
+            services.AddAssistantChatPipeline(_ => Recorder, Policy, detailedToolErrors: false);
 
             services.Replace(ServiceDescriptor.Singleton(
                 new AssistantAvailability(IsConfigured: true, Reason: string.Empty)));

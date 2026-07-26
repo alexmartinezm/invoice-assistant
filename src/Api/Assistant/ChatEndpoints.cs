@@ -1,6 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Security.Claims;
 using Api.Assistant.Tools;
+using Api.Assistant.Usage;
 using Microsoft.Extensions.Options;
 
 namespace Api.Assistant;
@@ -25,11 +26,12 @@ public static class ChatEndpoints
         return routes;
     }
 
-    private static IResult PostAsync(
+    private static async Task<IResult> PostAsync(
         ChatRequest request,
         ClaimsPrincipal principal,
         ChatOrchestrator orchestrator,
         AssistantAvailability availability,
+        UsageBudget budget,
         IOptions<AssistantOptions> options,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -58,6 +60,21 @@ public static class ChatEndpoints
                 title: "Message too long",
                 detail: $"The message must be at most {maxLength} characters; this one has {request.Message.Length}.",
                 statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        // The kill switch, while a status code can still say so. The collector re-checks before
+        // every model call inside the turn; this check is what turns "no budget left" into a 429
+        // instead of a stream that dies on its first event.
+        var status = await budget.GetStatusAsync(cancellationToken);
+        if (status.Exhausted)
+        {
+            AssistantTelemetry.BudgetRejections.Add(1);
+            return Results.Problem(
+                title: "Daily budget exhausted",
+                detail: $"The assistant has spent its daily budget of {status.DailyBudgetEur:0.00}€ "
+                    + "and is paused until midnight UTC. The rest of the app keeps working.",
+                statusCode: StatusCodes.Status429TooManyRequests,
+                extensions: new Dictionary<string, object?> { ["code"] = "daily_budget_exhausted" });
         }
 
         var logger = loggerFactory.CreateLogger(typeof(ChatEndpoints));
@@ -94,6 +111,12 @@ public static class ChatEndpoints
             catch (OperationCanceledException)
             {
                 // The user navigated away or closed the drawer; nothing to report.
+            }
+            catch (DailyBudgetExhaustedException exhausted)
+            {
+                // The turn itself crossed the line — the pre-flight check passed, then a tool
+                // round-trip spent the rest. Say what actually happened rather than "error".
+                failure = new TurnFailed(exhausted.Message);
             }
             catch (Exception exception)
             {

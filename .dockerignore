@@ -1,0 +1,25 @@
+# Build output and dependencies are produced inside the image; copying the host's would at best
+# waste a layer and at worst bake machine-specific paths into the publish.
+**/bin/
+**/obj/
+**/node_modules/
+src/Api/wwwroot/
+
+# Secrets never enter the build context. The container is configured by environment variables.
+.env
+
+# Nothing the running app needs. prompts/ and policies.json are deliberately absent from this
+# list: the image copies both, because the app reads them at startup.
+.git/
+.github/
+.agent/
+.claude/
+.idea/
+.vs/
+docs/
+evals/
+tests/
+TestResults/
+AGENTS.md
+CLAUDE.md
+README.md

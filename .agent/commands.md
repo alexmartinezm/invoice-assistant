@@ -11,6 +11,13 @@ dotnet restore
 npm install --prefix src/Web
 ```
 
+The whole demo in one container, without a local toolchain:
+
+```bash
+docker compose up              # builds the SPA into wwwroot, then serves it on :8080
+docker compose up --build      # after changing code: Compose reuses the image otherwise
+```
+
 Migrations and seed data are applied on startup, so there is no separate database step. The three demo users share the password `demo1234`.
 
 ## Development
@@ -37,7 +44,13 @@ The write-gate tests load the repository's real `policies.json` rather than a fi
 ```bash
 dotnet test --filter FullyQualifiedName~ToolPolicyEngineTests   # the matching table, no host
 dotnet test --filter FullyQualifiedName~WriteGateTests          # the gate end to end
+dotnet test --filter FullyQualifiedName~UsageAccountingTests    # metering and the usage endpoints
+dotnet test --filter FullyQualifiedName~DailyBudgetTests        # the spend kill switch
 ```
+
+The scripted model reports fixed usage (120 prompt / 45 completion tokens) and the test host prices
+it at 10€/20€ per million, so one scripted model call costs exactly 0.0021€. Changing either number
+moves the cost assertions.
 
 Evals against a real model (they spend tokens; the normal suite never does):
 
@@ -60,6 +73,7 @@ npm run lint --prefix src/Web          # ESLint
 npm run format:check --prefix src/Web  # Prettier
 npm run build --prefix src/Web         # typecheck + Vite build into src/Api/wwwroot
 jq empty policies.json                 # policy file is valid JSON
+docker compose config --quiet          # compose file parses and every variable resolves
 ```
 
 ## Migrations

@@ -3,11 +3,14 @@ import type {
   AppConfig,
   AuthenticatedUser,
   ChatEvent,
+  ConversationUsageDetail,
+  ConversationUsageRow,
   InvoiceDetail,
   InvoiceFilters,
   InvoiceList,
   LoginResponse,
   ReceivablesReport,
+  UsageSummary,
 } from './types';
 
 /** An error carrying what the API actually said, so the UI can show the real reason. */
@@ -97,6 +100,17 @@ export const api = {
     request<ActionOutcome>(`/api/actions/${encodeURIComponent(actionId)}/${decision}`, token, {
       method: 'POST',
     }),
+
+  usageSummary: (token: string) => request<UsageSummary>('/api/usage/summary', token),
+
+  usageConversations: (token: string) =>
+    request<ConversationUsageRow[]>('/api/usage/conversations', token),
+
+  usageConversation: (token: string, conversationId: string) =>
+    request<ConversationUsageDetail>(
+      `/api/usage/conversations/${encodeURIComponent(conversationId)}`,
+      token,
+    ),
 };
 
 /**

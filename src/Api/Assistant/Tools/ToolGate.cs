@@ -48,6 +48,13 @@ public sealed class ToolGate(
         ToolCall call,
         CancellationToken cancellationToken)
     {
+        // One span per tool call, carrying what the gate decided. The policy engine has a span of
+        // its own, but a call stopped by a per-turn limit never reaches the engine — without this
+        // span a blocked call would be the one thing a trace could not explain.
+        using var activity = AssistantTelemetry.Source.StartActivity("assistant.tool_call");
+        activity?.SetTag("assistant.tool", tool.Name);
+        activity?.SetTag("assistant.side_effect", tool.SideEffect.ToString());
+
         journal.CountToolCall();
 
         var principal = httpContextAccessor.HttpContext?.User
@@ -61,6 +68,7 @@ public sealed class ToolGate(
         // permitted forty times over.
         if (await ExceedsLimitsAsync(tool, userId, args, cancellationToken) is { } blocked)
         {
+            activity?.SetTag("assistant.gate_decision", "blocked");
             return blocked;
         }
 
@@ -69,15 +77,19 @@ public sealed class ToolGate(
         switch (decision.Action)
         {
             case PolicyAction.Deny:
+                activity?.SetTag("assistant.gate_decision", "denied");
                 logger.LogWarning("Denied {Tool}: {Reason}", tool.Name, decision.Reason);
                 await AuditAsync(userId, tool, args, AuditDecision.Denied, decision.Reason, journal.ConversationId, cancellationToken);
                 journal.Record(new ToolBlocked(tool.Name, decision.Reason));
                 return Error("policy_denied", decision.Reason);
 
             case PolicyAction.RequireConfirmation:
+                activity?.SetTag("assistant.gate_decision", "pending_approval");
                 return await ProposeAsync(tool, userId, args, describe, decision, cancellationToken);
 
             default:
+                activity?.SetTag("assistant.gate_decision", "allowed");
+
                 // A fresh key per attempt: it makes the call safe to retry inside the HTTP stack,
                 // which is what it is for. An approval replays under the pending action's own id.
                 var result = await ExecuteAsync(call, Guid.CreateVersion7().ToString(), cancellationToken);
