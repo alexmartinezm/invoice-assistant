@@ -146,10 +146,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             usage.ToTable("usage_records");
             usage.HasKey(u => u.Id);
 
-            // The two questions asked of this table: "what did this conversation cost?" for the
-            // usage endpoints, and "what has today cost?" for the daily kill switch.
+            // The three questions asked of this table: "what did this conversation cost?" for the
+            // detail, "what has today cost?" for the daily kill switch, and "what has this user
+            // cost?" — which is every usage request that does not come from an Admin, so it is the
+            // common path rather than the rare one.
             usage.HasIndex(u => u.ConversationId);
             usage.HasIndex(u => u.CreatedAt);
+            usage.HasIndex(u => u.UserId);
             usage.Property(u => u.Model).HasMaxLength(100);
 
             // Six decimal places: a single small call costs fractions of a cent, and rounding
