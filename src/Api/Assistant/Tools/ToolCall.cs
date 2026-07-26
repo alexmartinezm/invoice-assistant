@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace Api.Assistant.Tools;
@@ -55,7 +56,7 @@ public static class WriteToolPlans
 
         "update_due_date" => (
             WriteToolCatalog.UpdateDueDate,
-            UpdateDueDate(Text(args, "number"), DateOnly.Parse(Text(args, "new_due_date")))),
+            UpdateDueDate(Text(args, "number"), ParseDate(Text(args, "new_due_date")))),
 
         _ => throw new InvalidOperationException($"'{toolName}' is not a write tool this build knows about."),
     };
@@ -63,6 +64,15 @@ public static class WriteToolPlans
     private static string Text(JsonElement element, string property) =>
         element.GetProperty(property).GetString()
         ?? throw new InvalidOperationException($"Frozen arguments are missing '{property}'.");
+
+    /// <summary>
+    /// Frozen arguments are machine-written ISO dates, so they are read back with an exact format
+    /// and the invariant culture. A plain <c>Parse</c> reads them through whatever culture the
+    /// server happens to be running under, and the date on the approval card is not a field to
+    /// leave at the mercy of a container's locale.
+    /// </summary>
+    private static DateOnly ParseDate(string value) =>
+        DateOnly.ParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     private static string Escape(string value) => Uri.EscapeDataString(value);
 }

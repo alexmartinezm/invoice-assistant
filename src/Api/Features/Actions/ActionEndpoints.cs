@@ -97,7 +97,31 @@ public static class ActionEndpoints
         }
 
         using var args = JsonDocument.Parse(action.ArgsJson);
-        var (tool, call) = WriteToolPlans.Replay(action.ToolName, args.RootElement);
+
+        ToolIdentity tool;
+        ToolCall call;
+
+        try
+        {
+            (tool, call) = WriteToolPlans.Replay(action.ToolName, args.RootElement);
+        }
+        catch (Exception exception)
+            when (exception is InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            // The row names a tool this build cannot rebuild a request for: a deployment that
+            // changed underneath an open approval, or a policy that queued something with no write
+            // plan (a read under require_confirmation). Refusing is the only safe answer — executing
+            // a guess is exactly what the approval exists to prevent — and it says so rather than
+            // surfacing as an unexplained 500.
+            logger.LogError(exception, "Pending action {ActionId} for {Tool} cannot be replayed", action.Id, action.ToolName);
+
+            return Results.Problem(
+                title: "Action cannot be executed",
+                detail: $"'{action.ToolName}' cannot be replayed by this build, so nothing was done. "
+                    + "Ask the assistant again to propose it afresh.",
+                statusCode: StatusCodes.Status409Conflict,
+                extensions: new Dictionary<string, object?> { ["code"] = "action_not_replayable" });
+        }
 
         var decision = await gate.AuthoriseApprovalAsync(tool, args.RootElement, principal.Role(), cancellationToken);
         if (decision.Action is PolicyAction.Deny)
