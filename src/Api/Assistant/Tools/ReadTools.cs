@@ -30,7 +30,7 @@ public sealed class ReadTools(ToolGate gate)
         + "The from/to filters bound the due date. The response is a page: 'count' is how many rows it "
         + "carries and 'total' is how many match the filters, so quote 'total' when asked how many there "
         + "are, and say the list is partial when 'truncated' is true. Never add up the returned amounts "
-        + "yourself: use get_receivables_summary for totals.")]
+        + "yourself, per customer or overall: get_receivables_summary already holds both totals.")]
     public Task<JsonElement> ListInvoicesAsync(
         [Description("Persisted status: Draft, Sent, Paid or Cancelled. 'Overdue' is not a status; use overdue_only.")]
         string? status = null,
@@ -84,8 +84,12 @@ public sealed class ReadTools(ToolGate gate)
             cancellationToken);
 
     [Description(
-        "Returns outstanding receivables broken down into aging buckets (current, 1-30, 31-60, over 60 days), "
-        + "already totalled by the server. Use this for any question about how much is owed.")]
+        "Returns outstanding receivables broken down into aging buckets (current, 1-30, 31-60, over 60 days) "
+        + "and ranked by customer, already totalled by the server. Use this for any question about how much "
+        + "is owed and by whom: 'topDebtors' is ordered by outstanding amount, so its first entry answers "
+        + "'which customer owes the most' in this one call — never enumerate customers to work that out. "
+        + "'customerCount' is how many customers owe anything, so say the ranking is partial when it is "
+        + "larger than the number of entries returned.")]
     public Task<JsonElement> GetReceivablesSummaryAsync(CancellationToken cancellationToken = default) =>
         Read(
             ReadToolCatalog.GetReceivablesSummary,
