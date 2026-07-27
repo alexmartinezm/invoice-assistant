@@ -85,7 +85,7 @@ public sealed class ToolGate(
 
             case PolicyAction.RequireConfirmation:
                 activity?.SetTag("assistant.gate_decision", "pending_approval");
-                return await ProposeAsync(tool, userId, args, describe, decision, cancellationToken);
+                return await ProposeAsync(tool, userId, role, args, describe, decision, cancellationToken);
 
             default:
                 activity?.SetTag("assistant.gate_decision", "allowed");
@@ -234,6 +234,7 @@ public sealed class ToolGate(
     private async Task<JsonElement> ProposeAsync(
         ToolIdentity tool,
         Guid userId,
+        Role role,
         JsonElement args,
         Func<CancellationToken, Task<string>> describe,
         PolicyDecision decision,
@@ -254,8 +255,20 @@ public sealed class ToolGate(
         db.PendingActions.Add(action);
         await db.SaveChangesAsync(cancellationToken);
 
-        journal.CountProposal();
-        journal.Record(new ApprovalRequired(action.Id, tool.Name, action.Summary, action.ExpiresAt));
+        // Only a write spends the write budget. A deployment that sets defaults.read to
+        // require_confirmation gets its reads queued for a person without one confirmed read
+        // silently consuming the turn's single allowed change.
+        if (tool.SideEffect is ToolSideEffect.Write)
+        {
+            journal.CountProposal();
+        }
+
+        // Whether this user can approve travels with the proposal, so the card knows on arrival
+        // rather than discovering it from a 403 after the click. A proposal from somebody below the
+        // tool's floor is an escalation, not a mistake: an Admin may resolve it (see MayResolve).
+        var canApprove = role >= tool.RequiredRole;
+        journal.Record(new ApprovalRequired(
+            action.Id, tool.Name, action.Summary, action.ExpiresAt, canApprove, tool.RequiredRole.ToString()));
 
         // The turn continues (ADR 007): the model gets a result it can narrate in one line, and the
         // approval card arrives beside it. Nothing has changed in the database.
@@ -267,7 +280,10 @@ public sealed class ToolGate(
                 summary = action.Summary,
                 expiresAt = action.ExpiresAt,
                 reason = decision.Reason,
-                note = "Nothing has changed yet. Say in one line that this is waiting for approval, then stop.",
+                awaiting = canApprove ? "the user" : $"an approver with the {tool.RequiredRole} role",
+                note = canApprove
+                    ? "Nothing has changed yet. Say in one line that this is waiting for approval, then stop."
+                    : $"Nothing has changed yet. Say in one line that this needs an {tool.RequiredRole} to approve it, then stop.",
             },
             Json);
     }

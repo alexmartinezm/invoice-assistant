@@ -35,7 +35,21 @@ public sealed record InvoiceDetail(
 /// Envelope for list responses. <c>asOf</c> travels with the payload because "overdue" is only
 /// meaningful against a date, and this payload is read by the model as-is.
 /// </summary>
-public sealed record InvoiceList(DateOnly AsOf, string Currency, int Count, IReadOnlyList<InvoiceSummary> Invoices);
+/// <param name="Count">How many invoices this response carries.</param>
+/// <param name="Total">
+/// How many invoices match the filters in total. Separate from <see cref="Count"/> because a page
+/// is not an answer to "how many": a model handed twenty rows off a filter matching sixty has no
+/// way to tell, and would report twenty with complete confidence. The count the user is owed comes
+/// from the database, which is the same reason the aging report exists (ADR 004).
+/// </param>
+/// <param name="Truncated">True when the filters match more invoices than this response carries.</param>
+public sealed record InvoiceList(
+    DateOnly AsOf,
+    string Currency,
+    int Count,
+    int Total,
+    bool Truncated,
+    IReadOnlyList<InvoiceSummary> Invoices);
 
 public sealed record NewInvoiceLineRequest(string Description, decimal Quantity, decimal UnitPrice);
 

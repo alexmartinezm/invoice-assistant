@@ -10,6 +10,12 @@ export interface PendingApproval {
   tool: string;
   summary: string;
   expiresAt: string;
+  /** Whether this user clears the tool's role floor. The server decides; the card only renders it. */
+  canApprove: boolean;
+  /** The role the tool needs, so the card can name who to escalate to. */
+  requiredRole: string;
+  /** False when somebody else proposed it and it was escalated to this user. */
+  mine?: boolean;
   state: ApprovalState;
 }
 
@@ -47,7 +53,9 @@ export function ApprovalCard({
       className="slide-in border-accent bg-raised overflow-hidden rounded-lg border"
     >
       <header className="border-rule bg-accent-soft text-accent-ink flex items-baseline gap-2 border-b px-3 py-2">
-        <h3 className="flex-1 text-xs font-semibold tracking-wide uppercase">Approval required</h3>
+        <h3 className="flex-1 text-xs font-semibold tracking-wide uppercase">
+          {approval.canApprove ? 'Approval required' : `Needs an ${approval.requiredRole}`}
+        </h3>
         <span className="numeric text-[11px]" aria-live="off">
           {expired ? 'expired' : formatRemaining(remaining)}
         </span>
@@ -55,31 +63,45 @@ export function ApprovalCard({
 
       <p className="px-3 py-3 text-sm leading-relaxed break-words">{approval.summary}</p>
 
-      <p className="text-ink-faint px-3 pb-3 font-mono text-[11px]">{approval.tool}</p>
+      <p className="text-ink-faint px-3 pb-3 font-mono text-[11px]">
+        {approval.tool}
+        {approval.mine === false && ' · proposed by someone else'}
+      </p>
 
       {/* Wraps rather than squeezing: at 320px the expiry hint sits beside the buttons only if
           there is room for it, and a shrunken "Approve" is worse than a second line. */}
-      <div className="border-rule flex flex-wrap gap-2 border-t px-3 py-2">
-        <button
-          type="button"
-          onClick={() => onDecide(approval.actionId, 'approve')}
-          disabled={inFlight !== null || expired}
-          className="bg-accent text-paper hover:bg-accent-ink rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40"
-        >
-          {inFlight === 'approve' ? 'Approving…' : 'Approve'}
-        </button>
+      <div className="border-rule flex flex-wrap items-center gap-2 border-t px-3 py-2">
+        {/* No Approve button below the tool's role floor. The server would refuse the click, and a
+            button whose only outcome is a 403 is worse than no button: it reads as a decision the
+            user can make, spends the expiry window finding out otherwise, and teaches them to
+            distrust the ones that do work. Reject stays — withdrawing your own proposal is
+            always yours to do. */}
+        {approval.canApprove ? (
+          <button
+            type="button"
+            onClick={() => onDecide(approval.actionId, 'approve')}
+            disabled={inFlight !== null || expired}
+            className="bg-accent text-paper hover:bg-accent-ink rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40"
+          >
+            {inFlight === 'approve' ? 'Approving…' : 'Approve'}
+          </button>
+        ) : (
+          <p className="text-ink-soft text-xs">
+            An {approval.requiredRole} has to approve this one.
+          </p>
+        )}
 
         <button
           type="button"
           onClick={() => onDecide(approval.actionId, 'reject')}
           disabled={inFlight !== null || expired}
-          className="border-rule hover:bg-sunken rounded-md border px-3 py-1.5 text-sm transition-colors disabled:opacity-40"
+          className="border-rule hover:bg-sunken ml-auto rounded-md border px-3 py-1.5 text-sm transition-colors disabled:opacity-40"
         >
-          {inFlight === 'reject' ? 'Rejecting…' : 'Reject'}
+          {inFlight === 'reject' ? 'Rejecting…' : approval.canApprove ? 'Reject' : 'Withdraw'}
         </button>
 
         {expired && (
-          <p className="text-ink-faint self-center text-xs">Ask again to propose it afresh.</p>
+          <p className="text-ink-faint w-full text-xs">Ask again to propose it afresh.</p>
         )}
       </div>
     </section>

@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { useSession } from '../auth/useAuth';
 import { ApprovalCard } from './ApprovalCard';
 import { BlockCard } from './BlockCard';
+import { PendingInbox } from './PendingInbox';
 import { useChatStream, type ChatItem, type ToolRun } from './useChatStream';
 
 const suggestions = [
@@ -14,7 +15,9 @@ const suggestions = [
 
 export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { session } = useSession();
-  const { items, streaming, traceId, send, decide, reset } = useChatStream(session.accessToken);
+  const { items, streaming, traceId, transcriptActionIds, send, decide, reset } = useChatStream(
+    session.accessToken,
+  );
   const [draft, setDraft] = useState('');
   const transcript = useRef<HTMLDivElement>(null);
 
@@ -55,6 +58,10 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
           ×
         </button>
       </header>
+
+      {/* Above the transcript, not inside it: a decision escalated to you is not part of the
+          conversation you are having, and burying it under the scroll is how it expires unseen. */}
+      <PendingInbox token={session.accessToken} transcriptActionIds={transcriptActionIds} />
 
       <div ref={transcript} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {items.length === 0 ? (

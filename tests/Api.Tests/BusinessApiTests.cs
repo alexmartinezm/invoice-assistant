@@ -113,6 +113,37 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
     }
 
+    /// <summary>
+    /// A page says how much it left behind. The assistant relays this payload as-is, so a list
+    /// whose only number is "rows in this response" is a wrong answer to "how many are overdue?"
+    /// waiting to be stated as a fact.
+    /// </summary>
+    [Fact]
+    public async Task A_truncated_list_reports_the_total_it_matched()
+    {
+        using var admin = await factory.ClientForAsync("ana@demo");
+
+        var everything = await admin.GetFromJsonAsync<InvoiceList>("/api/invoices?limit=100");
+        Assert.NotNull(everything);
+        Assert.False(everything.Truncated);
+        Assert.Equal(everything.Count, everything.Total);
+        Assert.Equal(everything.Invoices.Count, everything.Count);
+
+        var page = await admin.GetFromJsonAsync<InvoiceList>("/api/invoices?limit=3");
+        Assert.NotNull(page);
+        Assert.Equal(3, page.Count);
+        Assert.True(page.Truncated);
+
+        // The total is the whole match, not the page: the same number the unpaged call reported.
+        Assert.Equal(everything.Total, page.Total);
+
+        // And it still tracks the filter rather than the table.
+        var overdue = await admin.GetFromJsonAsync<InvoiceList>("/api/invoices?overdue=true&limit=1");
+        Assert.NotNull(overdue);
+        Assert.True(overdue.Total < everything.Total);
+        Assert.Equal(overdue.Total > 1, overdue.Truncated);
+    }
+
     [Fact]
     public async Task The_aging_buckets_add_up_to_the_outstanding_total()
     {

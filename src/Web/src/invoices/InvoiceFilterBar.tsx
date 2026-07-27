@@ -6,10 +6,13 @@ export function InvoiceFilterBar({
   filters,
   onChange,
   resultCount,
+  truncation,
 }: {
   filters: InvoiceFilters;
   onChange: (filters: InvoiceFilters) => void;
   resultCount: number;
+  /** How much the server held back, when it returned a page rather than the whole match. */
+  truncation: { loaded: number; matched: number } | null;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -56,7 +59,19 @@ export function InvoiceFilterBar({
         className="border-rule bg-raised placeholder:text-ink-faint min-w-40 flex-1 rounded-md border px-3 py-1.5 text-sm"
       />
 
-      <span className="text-ink-faint numeric text-xs">{resultCount} shown</span>
+      {/* Metadata, so it stays ink-faint: a capped page is not a failure and not an aging signal,
+          and borrowing `danger` or the ramp for it would blunt what those two colours mean. */}
+      <span className="text-ink-faint numeric text-xs">
+        {resultCount} shown
+        {truncation && (
+          <span
+            title={`The ledger returns at most ${truncation.loaded} invoices per request, so the filters above narrow those ${truncation.loaded}. Narrow them further to reach the rest.`}
+          >
+            {' · first '}
+            {truncation.loaded} of {truncation.matched}
+          </span>
+        )}
+      </span>
     </div>
   );
 }

@@ -165,7 +165,7 @@ UI ──POST /api/chat (SSE)──► ChatOrchestrator
         │        ├─ RequireConfirm → PendingAction + TurnJournal → SSE `approval_required`
         │        └─ Deny           → AuditEvent `denied` + SSE `blocked` → the model explains it
         │      a limit exceeded    → AuditEvent `blocked` + SSE `blocked`
-        │      (a proposal spends the per-turn write budget too — ADR 007)
+        │      (a write proposal spends the per-turn write budget too — ADR 007)
         └─ 4. text streaming + activity events, draining the journal after each tool result
 ```
 

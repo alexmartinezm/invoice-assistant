@@ -27,8 +27,10 @@ public sealed class ReadTools(ToolGate gate)
 {
     [Description(
         "Lists invoices with optional filters. Use overdue_only to find invoices past their due date. "
-        + "The from/to filters bound the due date. Never add up the returned amounts yourself: "
-        + "use get_receivables_summary for totals.")]
+        + "The from/to filters bound the due date. The response is a page: 'count' is how many rows it "
+        + "carries and 'total' is how many match the filters, so quote 'total' when asked how many there "
+        + "are, and say the list is partial when 'truncated' is true. Never add up the returned amounts "
+        + "yourself: use get_receivables_summary for totals.")]
     public Task<JsonElement> ListInvoicesAsync(
         [Description("Persisted status: Draft, Sent, Paid or Cancelled. 'Overdue' is not a status; use overdue_only.")]
         string? status = null,

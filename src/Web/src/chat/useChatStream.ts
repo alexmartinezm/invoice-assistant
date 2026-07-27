@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, streamChatTurn } from '../api/client';
 import type { PendingApproval } from './ApprovalCard';
 
@@ -128,6 +128,11 @@ export function useChatStream(token: string) {
                     tool: event.tool,
                     summary: event.summary,
                     expiresAt: event.expiresAt,
+                    // The server says whether this user clears the tool's role floor, so the card
+                    // knows on arrival instead of finding out from a 403 after the click.
+                    canApprove: event.canApprove,
+                    requiredRole: event.requiredRole,
+                    mine: true,
                     state: { status: 'pending' },
                   });
                 });
@@ -210,5 +215,16 @@ export function useChatStream(token: string) {
     setStreaming(false);
   }, []);
 
-  return { items, streaming, traceId, send, decide, reset };
+  /** Action ids already on screen as cards, so the pending queue does not show them twice. */
+  const transcriptActionIds = useMemo(
+    () =>
+      new Set(
+        items.flatMap((item) =>
+          item.kind === 'assistant' ? item.approvals.map((approval) => approval.actionId) : [],
+        ),
+      ),
+    [items],
+  );
+
+  return { items, streaming, traceId, transcriptActionIds, send, decide, reset };
 }

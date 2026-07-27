@@ -28,6 +28,9 @@ export function InvoicesPage() {
   const [filters, setFilters] = useState<InvoiceFilters>({ status: '' });
   const [bucket, setBucket] = useState<AgingBucketKey | null>(null);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
+  // Set only when the server had more than it returned. The filters below narrow what was loaded,
+  // so a capped page has to say so rather than letting the row count pass for the whole match.
+  const [truncation, setTruncation] = useState<{ loaded: number; matched: number } | null>(null);
   const [report, setReport] = useState<ReceivablesReport | null>(null);
   const [selected, setSelected] = useState<InvoiceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +50,7 @@ export function InvoicesPage() {
 
         if (cancelled) return;
         setInvoices(list.invoices);
+        setTruncation(list.truncated ? { loaded: list.count, matched: list.total } : null);
         setReport(receivables);
         setError(null);
       } catch (cause) {
@@ -104,7 +108,12 @@ export function InvoicesPage() {
       {selected && <InvoiceDetailPanel invoice={selected} onClose={() => setSelected(null)} />}
 
       <div className="space-y-4">
-        <InvoiceFilterBar filters={filters} onChange={setFilters} resultCount={visible.length} />
+        <InvoiceFilterBar
+          filters={filters}
+          onChange={setFilters}
+          resultCount={visible.length}
+          truncation={truncation}
+        />
 
         <div aria-busy={loading} className={loading ? 'opacity-60 transition-opacity' : undefined}>
           <InvoiceTable
