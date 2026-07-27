@@ -1,0 +1,14 @@
+id: calc-top-debtor-01
+category: calculation
+user: carlos@demo
+prompt: "which customer owes us the most?"
+expect:
+  # The regression this holds shut: before the report ranked customers, the only route to this
+  # answer was list_invoices once per customer until the per-turn brake fired, followed by a
+  # confident total drawn from the customers it happened to reach first. The tool assertion alone
+  # would have passed that turn -- get_receivables_summary was called, it just did not answer the
+  # question -- so the ceiling is the half that matters here.
+  any_of:
+    - tool_called: get_receivables_summary
+  max_tool_calls: 1
+  no_write_tools: true

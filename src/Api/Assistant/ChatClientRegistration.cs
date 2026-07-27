@@ -102,17 +102,48 @@ public static class ChatClientRegistration
         return PolicyDocument.Load(path);
     }
 
-    private static AssistantAvailability DescribeAvailability(AiOptions ai) => ai.Provider switch
+    /// <summary>Whether a provider is usable, and the sentence the chat shows when it is not.</summary>
+    /// <remarks>
+    /// The two mismatch cases come first, and they earn their place: the provider defaults to
+    /// azure-openai, so pasting an OpenAI key into a hosting panel and leaving AI_PROVIDER alone is
+    /// the likeliest way to end up here. "Set the three AZURE_OPENAI_* variables" is precisely the
+    /// wrong instruction for someone who has already set the right key under the wrong provider —
+    /// it sends them looking for an Azure account they do not want.
+    /// </remarks>
+    public static AssistantAvailability DescribeAvailability(AiOptions ai) => ai.Provider switch
     {
+        "azure-openai" when !HasAzureCredentials(ai) && HasOpenAiCredentials(ai) =>
+            new AssistantAvailability(false,
+                "AI_PROVIDER is 'azure-openai' (the default) but the AZURE_OPENAI_* variables are empty, "
+                + "and OPENAI_API_KEY and CHAT_MODEL are set. Set AI_PROVIDER=openai-compatible to use them."),
+        "openai-compatible" when !HasOpenAiCredentials(ai) && HasAzureCredentials(ai) =>
+            new AssistantAvailability(false,
+                "AI_PROVIDER is 'openai-compatible' but OPENAI_API_KEY or CHAT_MODEL is empty, "
+                + "and the AZURE_OPENAI_* variables are set. Set AI_PROVIDER=azure-openai to use them."),
         "azure-openai" when string.IsNullOrWhiteSpace(ai.AzureEndpoint) || string.IsNullOrWhiteSpace(ai.AzureApiKey) =>
-            new AssistantAvailability(false, "Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY and AZURE_OPENAI_CHAT_DEPLOYMENT in .env."),
+            new AssistantAvailability(false,
+                "Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY and AZURE_OPENAI_CHAT_DEPLOYMENT "
+                + "in .env, or in your host's environment variables."),
         "azure-openai" when string.IsNullOrWhiteSpace(ai.AzureChatDeployment) =>
-            new AssistantAvailability(false, "Set AZURE_OPENAI_CHAT_DEPLOYMENT in .env."),
+            new AssistantAvailability(false,
+                "Set AZURE_OPENAI_CHAT_DEPLOYMENT in .env, or in your host's environment variables."),
         "openai-compatible" when string.IsNullOrWhiteSpace(ai.OpenAiApiKey) || string.IsNullOrWhiteSpace(ai.ChatModel) =>
-            new AssistantAvailability(false, "Set OPENAI_API_KEY and CHAT_MODEL in .env (OPENAI_BASE_URL is optional)."),
+            new AssistantAvailability(false,
+                "Set OPENAI_API_KEY and CHAT_MODEL in .env, or in your host's environment variables "
+                + "(OPENAI_BASE_URL is optional)."),
         "azure-openai" or "openai-compatible" => new AssistantAvailability(true, string.Empty),
         _ => new AssistantAvailability(false, $"Unknown AI_PROVIDER '{ai.Provider}'. Use azure-openai or openai-compatible."),
     };
+
+    /// <summary>What the azure-openai branch needs before it can build a client.</summary>
+    private static bool HasAzureCredentials(AiOptions ai) =>
+        !string.IsNullOrWhiteSpace(ai.AzureEndpoint)
+        && !string.IsNullOrWhiteSpace(ai.AzureApiKey)
+        && !string.IsNullOrWhiteSpace(ai.AzureChatDeployment);
+
+    /// <summary>What the openai-compatible branch needs; OPENAI_BASE_URL is genuinely optional.</summary>
+    private static bool HasOpenAiCredentials(AiOptions ai) =>
+        !string.IsNullOrWhiteSpace(ai.OpenAiApiKey) && !string.IsNullOrWhiteSpace(ai.ChatModel);
 
     private static IChatClient BuildChatClient(AiOptions ai, IServiceProvider services)
     {

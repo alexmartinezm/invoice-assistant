@@ -164,6 +164,35 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task The_customer_ranking_reconciles_with_the_same_totals_the_buckets_report()
+    {
+        using var admin = await factory.ClientForAsync("ana@demo");
+
+        var report = await admin.GetFromJsonAsync<ReceivablesReport>("/api/reports/receivables");
+
+        Assert.NotNull(report);
+        Assert.NotEmpty(report.TopDebtors);
+
+        // Ranked, because the whole point is that the first entry answers "who owes us the most"
+        // without the caller — or the model — scanning anything.
+        Assert.Equal([.. report.TopDebtors.OrderByDescending(c => c.Outstanding)], report.TopDebtors);
+
+        // What is overdue is part of what is outstanding, never more than it.
+        Assert.All(report.TopDebtors, customer =>
+            Assert.True(
+                customer.Overdue <= customer.Outstanding,
+                $"{customer.CustomerName} is overdue {customer.Overdue} of an outstanding {customer.Outstanding}"));
+
+        // The seed has fewer customers than the cap, so the ranking is the whole ledger here and
+        // has to agree with the headline figures to the cent. Two ways of adding up the same
+        // invoices that disagree would put a wrong number in front of the user either way.
+        Assert.Equal(report.CustomerCount, report.TopDebtors.Count);
+        Assert.Equal(report.InvoiceCount, report.TopDebtors.Sum(c => c.InvoiceCount));
+        Assert.Equal(report.TotalOutstanding, report.TopDebtors.Sum(c => c.Outstanding));
+        Assert.Equal(report.TotalOverdue, report.TopDebtors.Sum(c => c.Overdue));
+    }
+
+    [Fact]
     public async Task A_created_draft_is_numbered_and_totalled_by_the_server()
     {
         using var accountant = await factory.ClientForAsync("carlos@demo");

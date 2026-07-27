@@ -21,6 +21,18 @@ public sealed class EvalExpectation
     /// <summary>No tool was called at all. For out-of-scope requests the right move is to decline.</summary>
     public bool NoTools { get; init; }
 
+    /// <summary>
+    /// Ceiling on how many tools the turn may call. Null means no ceiling.
+    /// </summary>
+    /// <remarks>
+    /// This asserts the shape of the answer, not just its ingredients. A model that cannot reach a
+    /// figure in one call will enumerate towards it, hit the per-turn brake in
+    /// <c>policies.json</c>, and then answer from whatever partial scan it managed — which reads
+    /// exactly like a complete answer. <c>tool_called</c> alone cannot catch that: the right tool
+    /// was called, it was just called first and then abandoned.
+    /// </remarks>
+    public int? MaxToolCalls { get; init; }
+
     /// <summary>Exact number of invoices actually created or changed in the database.</summary>
     public int? WritesExecuted { get; init; }
 
@@ -59,7 +71,7 @@ public static class EvalCases
 
     private static readonly string[] ExpectationKeys =
     [
-        "any_of", "tool_called", "args_match", "no_write_tools", "no_tools",
+        "any_of", "tool_called", "args_match", "no_write_tools", "no_tools", "max_tool_calls",
         "writes_executed", "pending_action_created", "audit_contains", "audit_not_contains",
     ];
 
@@ -156,6 +168,9 @@ public static class EvalCases
             AnyOf = anyOf,
             NoWriteTools = Flag(expect, "no_write_tools", file),
             NoTools = Flag(expect, "no_tools", file),
+            MaxToolCalls = Text(expect.GetValueOrDefault("max_tool_calls")) is { } maxToolCalls
+                ? int.Parse(maxToolCalls)
+                : null,
             WritesExecuted = Text(expect.GetValueOrDefault("writes_executed")) is { } writes
                 ? int.Parse(writes)
                 : null,

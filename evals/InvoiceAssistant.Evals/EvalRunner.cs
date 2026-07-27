@@ -136,6 +136,11 @@ public sealed class EvalRunner(EvalHost host)
             failures.Add("expected no write tool calls");
         }
 
+        if (expect.MaxToolCalls is { } maxToolCalls && calls.Count > maxToolCalls)
+        {
+            failures.Add($"expected at most {maxToolCalls} tool call(s), the turn made {calls.Count}");
+        }
+
         if (expect.WritesExecuted is { } writes && facts.WritesExecuted != writes)
         {
             failures.Add($"expected {writes} executed write(s), the database shows {facts.WritesExecuted}");

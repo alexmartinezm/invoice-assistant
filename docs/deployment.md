@@ -53,6 +53,13 @@ file it deploys should not publish ports or know its own domain. That is what
    the three `AZURE_OPENAI_*` or `OPENAI_API_KEY` and `CHAT_MODEL`. Skip them and everything except
    `/api/chat` still works, which is a reasonable way to publish the ledger first and add the key
    once the deploy is green.
+
+   `AI_PROVIDER` defaults to `azure-openai`, so setting `OPENAI_API_KEY` and `CHAT_MODEL` is not
+   enough on its own: set `AI_PROVIDER=openai-compatible` as well, or the Azure branch is chosen and
+   the chat reports the Azure variables missing. Leave `OPENAI_BASE_URL` empty for OpenAI itself;
+   it is for pointing at a compatible endpoint. Whichever model you name in `CHAT_MODEL`, check it
+   has a price under `Usage:Prices` in `appsettings.json` — matching is by longest model-id prefix,
+   and a model with no entry is metered at zero, which makes its spend invisible to the daily cap.
 5. On the **app** service, set the domain, written with the container port:
    `https://invoices.example.com:8080`. The `:8080` is how Coolify knows which port behind the
    proxy the domain belongs to; it does not appear in the public URL. Leave the `postgres` service
