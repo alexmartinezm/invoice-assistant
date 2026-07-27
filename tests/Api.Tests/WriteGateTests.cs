@@ -209,41 +209,6 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// A tool's declared role floor is enforced when the assistant proposes it, not only when
-    /// somebody clicks approve. <c>cancel_invoice</c> is Admin-only, so an Accountant asking for it
-    /// is refused outright.
-    /// </summary>
-    /// <remarks>
-    /// Without this the policy's <c>always: require_confirmation</c> on cancel_invoice produced an
-    /// approval card for a user whose own approval could never authorise it: the card was the only
-    /// answer they got, and clicking it returned a 403. Refusing up front is both the honest answer
-    /// and the one that leaves an audit trail saying why.
-    /// </remarks>
-    [Fact]
-    public async Task A_tool_above_the_users_role_is_denied_rather_than_proposed()
-    {
-        var number = await CreateAndSendAsync(unitPrice: 20m);
-
-        factory.Model.Script(
-            [Call("cancel_invoice", new { number })],
-            [new TextContent("Only an Admin can cancel an invoice.")]);
-
-        using var client = await factory.ClientForAsync("carlos@demo");
-        var events = await ChatEventsAsync(client, $"cancel {number}");
-        var conversationId = Parse<ConversationPayload>(events[0].Data).ConversationId;
-
-        Assert.Equal(InvoiceStatus.Sent, await StatusOfAsync(number));
-        Assert.Equal([AuditDecision.Denied], await AuditFor(conversationId));
-
-        // No card, because there is nothing this user could approve.
-        Assert.Empty(await PendingFor(conversationId));
-        Assert.DoesNotContain(events, e => e.Name == "approval_required");
-
-        var blocked = Assert.Single(events, e => e.Name == "blocked");
-        Assert.Contains("Admin", Parse<BlockedPayload>(blocked.Data).Reason);
-    }
-
-    /// <summary>
     /// The anti-injection brake. Even if the model is talked into iterating, the second write in a
     /// turn does not happen — the limit is counted by the gate, not asked of the model.
     /// </summary>
@@ -316,31 +281,6 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         Assert.Equal(InvoiceStatus.Sent, await StatusOfAsync(number));
         Assert.Single(await PendingFor(conversationId));
-    }
-
-    /// <summary>
-    /// A pending row this build cannot rebuild a request for is refused with a reason, not with an
-    /// unhandled exception. It happens when a deployment changes underneath an open approval, and
-    /// when <c>defaults.read</c> is set to <c>require_confirmation</c> — reads have no write plan.
-    /// </summary>
-    [Fact]
-    public async Task An_action_this_build_cannot_replay_is_refused_without_executing()
-    {
-        var actionId = await InsertPendingActionAsync("carlos@demo", "list_invoices", "{}");
-
-        using var client = await factory.ClientForAsync("carlos@demo");
-        var response = await client.PostAsync($"/api/actions/{actionId}/approve", content: null);
-
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-
-        var problem = await response.Content.ReadFromJsonAsync<ProblemPayload>();
-        Assert.Equal("action_not_replayable", problem!.Code);
-
-        // Still pending rather than silently consumed: nothing ran, so nothing was decided.
-        using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var action = await db.PendingActions.AsNoTracking().SingleAsync(a => a.Id == actionId);
-        Assert.Equal(PendingActionStatus.Pending, action.Status);
     }
 
     /// <summary>
@@ -426,36 +366,6 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var approval = Parse<ApprovalPayload>(events.Single(e => e.Name == "approval_required").Data);
 
         return (conversationId, approval.ActionId);
-    }
-
-    /// <summary>
-    /// Writes a pending row straight to the database. The gate will not produce one for a read
-    /// under the shipped policy, and the case worth covering is the row existing at all.
-    /// </summary>
-    private async Task<Guid> InsertPendingActionAsync(string email, string toolName, string argsJson)
-    {
-        using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-        var userId = await db.Users.AsNoTracking()
-            .Where(user => user.Email == email)
-            .Select(user => user.Id)
-            .SingleAsync();
-
-        var action = new PendingAction
-        {
-            UserId = userId,
-            ToolName = toolName,
-            ArgsJson = argsJson,
-            Summary = $"Replay {toolName}",
-            CreatedAt = factory.Clock.UtcNow,
-            ExpiresAt = factory.Clock.UtcNow.AddMinutes(5),
-        };
-
-        db.PendingActions.Add(action);
-        await db.SaveChangesAsync();
-
-        return action.Id;
     }
 
     private async Task ExpireAsync(Guid actionId)

@@ -72,22 +72,6 @@ public sealed class ToolGate(
             return blocked;
         }
 
-        // The tool's own role floor, before policy gets a say. A rule can narrow what a role may do;
-        // it cannot widen it past the role the tool declares, because the endpoint behind the tool
-        // would refuse anyway. Checking it here is what stops the gate proposing an action to
-        // somebody who could never approve it: an Accountant asked to confirm cancel_invoice would
-        // get a card that answers 403 on click, which is a worse answer than "you cannot do this".
-        if (role < tool.RequiredRole)
-        {
-            var reason = $"{tool.Name} needs the {tool.RequiredRole} role; this user is {role}.";
-
-            activity?.SetTag("assistant.gate_decision", "denied");
-            logger.LogWarning("Denied {Tool}: {Reason}", tool.Name, reason);
-            await AuditAsync(userId, tool, args, AuditDecision.Denied, reason, journal.ConversationId, cancellationToken);
-            journal.Record(new ToolBlocked(tool.Name, reason));
-            return Error("policy_denied", reason);
-        }
-
         var decision = await policy.EvaluateAsync(tool, args, role, cancellationToken);
 
         switch (decision.Action)

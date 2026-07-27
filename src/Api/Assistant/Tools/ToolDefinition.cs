@@ -17,11 +17,9 @@ public enum ToolRiskLevel
 }
 
 /// <summary>
-/// A tool plus the metadata the write gate decides on. Policy rules match against
-/// <see cref="SideEffect"/> — never against the tool name pattern — so adding a tool cannot
-/// silently escape an existing rule. <see cref="RequiredRole"/> is not a rule input but a floor
-/// the gate applies on its own, before and independently of policy: no rule can authorise a caller
-/// below it.
+/// A tool plus the metadata the write gate decides on. The policy engine (F2) matches rules
+/// against <see cref="SideEffect"/> and <see cref="RequiredRole"/> — never against the tool name
+/// pattern — so adding a tool cannot silently escape an existing rule.
 /// </summary>
 public sealed record ToolDefinition(
     AIFunction Function,
