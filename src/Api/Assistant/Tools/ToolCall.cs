@@ -61,6 +61,15 @@ public static class WriteToolPlans
         _ => throw new InvalidOperationException($"'{toolName}' is not a write tool this build knows about."),
     };
 
+    /// <summary>
+    /// The identity of a write tool by name, without rebuilding its request. Approval surfaces need
+    /// the role floor to say who can act on a proposal; they do not need the call until somebody
+    /// actually approves. Null for a name this build does not have — a pending row from an older
+    /// deployment is a thing to describe, not a thing to crash on.
+    /// </summary>
+    public static ToolIdentity? Find(string toolName) => WriteToolCatalog.All
+        .FirstOrDefault(tool => string.Equals(tool.Name, toolName, StringComparison.Ordinal));
+
     private static string Text(JsonElement element, string property) =>
         element.GetProperty(property).GetString()
         ?? throw new InvalidOperationException($"Frozen arguments are missing '{property}'.");

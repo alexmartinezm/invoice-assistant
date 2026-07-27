@@ -18,6 +18,29 @@ public sealed record ActionOutcome(
     JsonElement? Result);
 
 /// <summary>
+/// A proposal as somebody looking at it sees it.
+/// </summary>
+/// <param name="Mine">True when this caller is the one who proposed it.</param>
+/// <param name="CanApprove">
+/// Whether this caller clears the tool's role floor. Deliberately not a promise that approving will
+/// succeed — policy is re-evaluated at approval time and the endpoint behind the tool has its own
+/// limits, so a cleared floor can still end in a refusal (ADR 001). What it does guarantee is the
+/// opposite: when it is false, approving cannot work, which is the case worth not offering a button
+/// for.
+/// </param>
+/// <param name="RequiredRole">The role the tool needs, so a card can name who to escalate to.</param>
+public sealed record PendingActionView(
+    Guid ActionId,
+    string Tool,
+    string Summary,
+    string Status,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset ExpiresAt,
+    bool Mine,
+    bool CanApprove,
+    string? RequiredRole);
+
+/// <summary>
 /// Approving or rejecting a write the assistant proposed.
 /// </summary>
 /// <remarks>
@@ -39,11 +62,45 @@ public static class ActionEndpoints
     {
         var group = routes.MapGroup("/api/actions").WithTags("Assistant").RequireAuthorization();
 
+        group.MapGet("/", OpenAsync);
         group.MapGet("/{id:guid}", GetAsync);
         group.MapPost("/{id:guid}/approve", ApproveAsync);
         group.MapPost("/{id:guid}/reject", RejectAsync);
 
         return routes;
+    }
+
+    /// <summary>How many open proposals the list returns. A demo never has more; a cap is cheap.</summary>
+    public const int MaxOpen = 50;
+
+    /// <summary>
+    /// The proposals still waiting on this caller.
+    /// </summary>
+    /// <remarks>
+    /// Without this an escalation had nowhere to land. An Admin has always been allowed to resolve a
+    /// proposal somebody else made — see <see cref="MayResolve"/> — but with no way to discover one
+    /// and a five-minute window to do it in, that permission was unreachable in practice: the
+    /// Accountant who proposed a cancellation could only watch their own card expire.
+    /// </remarks>
+    private static async Task<IResult> OpenAsync(
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IClock clock,
+        CancellationToken cancellationToken)
+    {
+        var now = clock.UtcNow;
+        var userId = principal.Id();
+        var isAdmin = principal.Role() is Role.Admin;
+
+        var open = await db.PendingActions.AsNoTracking()
+            .Where(a => a.Status == PendingActionStatus.Pending && a.ExpiresAt > now)
+            .Where(a => isAdmin || a.UserId == userId)
+            // Soonest to lapse first: this is a queue with a clock on it, not a history.
+            .OrderBy(a => a.ExpiresAt)
+            .Take(MaxOpen)
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(open.Select(action => ToView(action, principal, now)).ToList());
     }
 
     private static async Task<IResult> GetAsync(
@@ -61,14 +118,28 @@ public static class ActionEndpoints
             return NotFound(id);
         }
 
-        return Results.Ok(new
-        {
-            actionId = action.Id,
-            tool = action.ToolName,
-            summary = action.Summary,
-            status = Describe(action, clock.UtcNow),
-            expiresAt = action.ExpiresAt,
-        });
+        return Results.Ok(ToView(action, principal, clock.UtcNow));
+    }
+
+    /// <summary>
+    /// Answers "what is this, and can you act on it?" in one place, so the list, the single fetch
+    /// and the SSE event cannot come to different conclusions about the same row.
+    /// </summary>
+    private static PendingActionView ToView(PendingAction action, ClaimsPrincipal principal, DateTimeOffset now)
+    {
+        var tool = WriteToolPlans.Find(action.ToolName);
+        var role = principal.Role();
+
+        return new PendingActionView(
+            action.Id,
+            action.ToolName,
+            action.Summary,
+            Describe(action, now),
+            action.CreatedAt,
+            action.ExpiresAt,
+            Mine: action.UserId == principal.Id(),
+            CanApprove: action.IsOpen(now) && tool is not null && role >= tool.RequiredRole,
+            RequiredRole: tool?.RequiredRole.ToString());
     }
 
     private static async Task<IResult> ApproveAsync(

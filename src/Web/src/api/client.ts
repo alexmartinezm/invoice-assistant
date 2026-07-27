@@ -9,6 +9,7 @@ import type {
   InvoiceFilters,
   InvoiceList,
   LoginResponse,
+  PendingActionView,
   ReceivablesReport,
   UsageSummary,
 } from './types';
@@ -100,6 +101,13 @@ export const api = {
     request<ActionOutcome>(`/api/actions/${encodeURIComponent(actionId)}/${decision}`, token, {
       method: 'POST',
     }),
+
+  /**
+   * Proposals still waiting on this user — their own, plus anything escalated to them. An Admin has
+   * always been allowed to resolve somebody else's proposal; without this there was no way to find
+   * one before it expired.
+   */
+  openActions: (token: string) => request<PendingActionView[]>('/api/actions', token),
 
   usageSummary: (token: string) => request<UsageSummary>('/api/usage/summary', token),
 

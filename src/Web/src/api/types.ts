@@ -97,6 +97,8 @@ export type ChatEvent =
       tool: string;
       summary: string;
       expiresAt: string;
+      canApprove: boolean;
+      requiredRole: string;
     }
   | { type: 'blocked'; tool: string; reason: string }
   | { type: 'done'; conversationId: string; traceId: string }
@@ -169,4 +171,22 @@ export interface ActionOutcome {
   status: 'approved' | 'rejected' | 'failed';
   summary: string;
   message: string;
+}
+
+/** A proposal waiting on somebody, as the server describes it to whoever is looking. */
+export interface PendingActionView {
+  actionId: string;
+  tool: string;
+  summary: string;
+  status: string;
+  createdAt: string;
+  expiresAt: string;
+  /** True when this user is the one who proposed it. */
+  mine: boolean;
+  /**
+   * Whether this user clears the tool's role floor. Not a promise that approving succeeds — policy
+   * is re-checked server-side — but when false, approving cannot work, so no button is offered.
+   */
+  canApprove: boolean;
+  requiredRole: string | null;
 }

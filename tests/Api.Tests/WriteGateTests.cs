@@ -284,6 +284,106 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// The escalation path, end to end: an Accountant proposes a cancellation they cannot perform,
+    /// an Admin finds it in their queue and approves it.
+    /// </summary>
+    /// <remarks>
+    /// <c>evals/cases/write-propose-05.yaml</c> asserts the first half of this. Until the queue
+    /// existed the second half was unreachable — an Admin was allowed to resolve somebody else's
+    /// proposal but had no way to find one inside the five-minute window.
+    /// </remarks>
+    [Fact]
+    public async Task An_accountants_proposal_is_escalated_to_an_admin_who_can_approve_it()
+    {
+        var number = await CreateAndSendAsync(unitPrice: 20m);
+
+        factory.Model.Script(
+            [Call("cancel_invoice", new { number })],
+            [new TextContent("An Admin has to approve this.")]);
+
+        using var accountant = await factory.ClientForAsync("carlos@demo");
+        var events = await ChatEventsAsync(accountant, $"cancel {number}");
+        var conversationId = Parse<ConversationPayload>(events[0].Data).ConversationId;
+
+        // The proposer is told, with the proposal itself, that this is not theirs to approve.
+        var approval = Parse<ApprovalPayload>(events.Single(e => e.Name == "approval_required").Data);
+        Assert.False(approval.CanApprove);
+        Assert.Equal("Admin", approval.RequiredRole);
+
+        // It is in their own queue, but not as something they can act on.
+        var own = Assert.Single(
+            await QueueFor(accountant), a => a.ActionId == approval.ActionId);
+        Assert.True(own.Mine);
+        Assert.False(own.CanApprove);
+
+        // The Admin finds it without being handed the id, and can act on it.
+        using var admin = await factory.ClientForAsync("ana@demo");
+        var escalated = Assert.Single(await QueueFor(admin), a => a.ActionId == approval.ActionId);
+        Assert.False(escalated.Mine);
+        Assert.True(escalated.CanApprove);
+
+        var response = await admin.PostAsync($"/api/actions/{approval.ActionId}/approve", content: null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(InvoiceStatus.Cancelled, await StatusOfAsync(number));
+        Assert.Equal([AuditDecision.Confirmed], await AuditFor(conversationId));
+    }
+
+    /// <summary>A resolved proposal leaves the queue: it is a queue, not a history.</summary>
+    [Fact]
+    public async Task The_queue_only_carries_proposals_that_are_still_open()
+    {
+        var number = await CreateAndSendAsync(unitPrice: 500m);
+        var (_, actionId) = await ProposeAsync("mark_invoice_paid", new { number }, $"mark {number} as paid");
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+        Assert.Contains(await QueueFor(client), a => a.ActionId == actionId);
+
+        (await client.PostAsync($"/api/actions/{actionId}/reject", content: null)).EnsureSuccessStatusCode();
+
+        Assert.DoesNotContain(await QueueFor(client), a => a.ActionId == actionId);
+    }
+
+    /// <summary>
+    /// A Viewer's queue stays empty even while proposals exist: they cannot propose, and nothing
+    /// escalates to them because there is nothing they could run.
+    /// </summary>
+    [Fact]
+    public async Task A_viewer_sees_nobody_elses_proposals()
+    {
+        var number = await CreateAndSendAsync(unitPrice: 500m);
+        await ProposeAsync("mark_invoice_paid", new { number }, $"mark {number} as paid");
+
+        using var viewer = await factory.ClientForAsync("lucia@demo");
+        Assert.Empty(await QueueFor(viewer));
+    }
+
+    /// <summary>
+    /// A pending row this build cannot rebuild a request for is refused with a reason, not with an
+    /// unhandled exception. It happens when a deployment changes underneath an open approval, and
+    /// when <c>defaults.read</c> is set to <c>require_confirmation</c> — reads have no write plan.
+    /// </summary>
+    [Fact]
+    public async Task An_action_this_build_cannot_replay_is_refused_without_executing()
+    {
+        var actionId = await InsertPendingActionAsync("carlos@demo", "list_invoices", "{}");
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+        var response = await client.PostAsync($"/api/actions/{actionId}/approve", content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<ProblemPayload>();
+        Assert.Equal("action_not_replayable", problem!.Code);
+
+        // Still pending rather than silently consumed: nothing ran, so nothing was decided.
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var action = await db.PendingActions.AsNoTracking().SingleAsync(a => a.Id == actionId);
+        Assert.Equal(PendingActionStatus.Pending, action.Status);
+    }
+
+    /// <summary>
     /// The same key twice creates one invoice, not two. This is what makes an approval safe to
     /// retry: the second attempt returns the first attempt's answer.
     /// </summary>
@@ -425,6 +525,39 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
             .ToListAsync();
     }
 
+    private static async Task<List<PendingActionPayload>> QueueFor(HttpClient client) =>
+        (await client.GetFromJsonAsync<List<PendingActionPayload>>("/api/actions"))!;
+
+    /// <summary>
+    /// Writes a pending row straight to the database. The gate will not produce one for a read
+    /// under the shipped policy, and the case worth covering is the row existing at all.
+    /// </summary>
+    private async Task<Guid> InsertPendingActionAsync(string email, string toolName, string argsJson)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var userId = await db.Users.AsNoTracking()
+            .Where(user => user.Email == email)
+            .Select(user => user.Id)
+            .SingleAsync();
+
+        var action = new PendingAction
+        {
+            UserId = userId,
+            ToolName = toolName,
+            ArgsJson = argsJson,
+            Summary = $"Replay {toolName}",
+            CreatedAt = factory.Clock.UtcNow,
+            ExpiresAt = factory.Clock.UtcNow.AddMinutes(5),
+        };
+
+        db.PendingActions.Add(action);
+        await db.SaveChangesAsync();
+
+        return action.Id;
+    }
+
     private static async Task<Guid> ChatAsync(HttpClient client, string message) =>
         Parse<ConversationPayload>((await ChatEventsAsync(client, message))[0].Data).ConversationId;
 
@@ -457,7 +590,22 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
     private sealed record ConversationPayload(Guid ConversationId, string TraceId);
 
-    private sealed record ApprovalPayload(Guid ActionId, string Tool, string Summary, DateTimeOffset ExpiresAt);
+    private sealed record ApprovalPayload(
+        Guid ActionId,
+        string Tool,
+        string Summary,
+        DateTimeOffset ExpiresAt,
+        bool CanApprove,
+        string RequiredRole);
+
+    private sealed record PendingActionPayload(
+        Guid ActionId,
+        string Tool,
+        string Summary,
+        string Status,
+        bool Mine,
+        bool CanApprove,
+        string? RequiredRole);
 
     private sealed record BlockedPayload(string Tool, string Reason);
 

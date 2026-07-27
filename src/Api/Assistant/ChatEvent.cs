@@ -45,11 +45,18 @@ public sealed record TextToken(string Text) : ChatEvent
 /// A write the assistant proposed and cannot perform on its own. Carries everything the approval
 /// card needs, including the deadline — an approval the user cannot see expiring is a trap.
 /// </summary>
+/// <param name="CanApprove">
+/// Whether this user clears the tool's role floor. Sent with the proposal so the card knows on
+/// arrival whether to offer an Approve button, rather than finding out from a 403 after the click.
+/// </param>
+/// <param name="RequiredRole">The role the tool needs, so the card can name who to escalate to.</param>
 public sealed record ApprovalRequired(
     Guid ActionId,
     string Tool,
     string Summary,
-    DateTimeOffset ExpiresAt) : ChatEvent
+    DateTimeOffset ExpiresAt,
+    bool CanApprove,
+    string RequiredRole) : ChatEvent
 {
     public override string EventName() => "approval_required";
 }
