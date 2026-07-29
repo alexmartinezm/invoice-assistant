@@ -28,6 +28,29 @@ flowchart TD
 
 The golden rule: **the system prompt can ask for good behavior; only the server can guarantee it.** The prompt is UX, the policy is security. Key decisions are documented as ADRs in [`docs/adr/`](docs/adr/).
 
+## What it looks like
+
+The invoicing app, with the assistant docked to the right on every page. Around 40 seeded invoices,
+three demo users, `gpt-4o-mini` behind `/api/chat`: the model picked its own tools, and every figure
+in its answers came back from the API.
+
+![The invoices page with the receivables strip, filters and the ledger table, next to the assistant drawer](docs/screenshots/invoice-ledger.png)
+
+Asking an Accountant's assistant to settle a €1,004.30 invoice does not settle it. The gate turns
+the tool call into a proposal, described by the server rather than by the model that proposed it,
+and nothing reaches the ledger until a human confirms it.
+
+![An approval card asking to confirm marking invoice 2026-0025 as paid, with Approve and Reject](docs/screenshots/assistant-approval-required.png)
+
+Every model call is metered where it happens and priced from a table in configuration, with the
+day's spend checked against the kill switch before each one.
+
+![The usage page showing today's spend, the daily budget bar and one row per conversation](docs/screenshots/usage-per-conversation.png)
+
+The whole tour is in [**docs/screenshots.md**](docs/screenshots.md): the invoice detail and the
+aging buckets, an approved settlement still refused by the API's own ceiling, a Viewer's write
+denied by policy, and the per-turn limit stopping a bulk cancellation after its first call.
+
 ## Repo structure
 
 ```text
@@ -42,7 +65,7 @@ invoice-assistant/
 │   └── cases/                    # Declarative *.yaml cases
 ├── prompts/system.md             # Versioned system prompt (hash per conversation)
 ├── policies.json                 # Write gate: structured rules, no DSL
-├── docs/                         # Architecture + ADRs + deployment
+├── docs/                         # Architecture + ADRs + deployment + screenshots
 ├── Dockerfile                    # SPA build → API publish → one runtime image
 ├── docker-compose.yml            # The whole demo, or just PostgreSQL for development
 ├── docker-compose.coolify.yml    # The same stack with the panel owning domain, TLS and proxy
