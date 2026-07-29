@@ -31,8 +31,9 @@ The golden rule: **the system prompt can ask for good behavior; only the server 
 ## What it looks like
 
 Every screenshot below is the running app against the seeded ledger — around 40 invoices, the three
-demo users, the real policy file. The figures come from tool calls against the API, the approval
-summaries are written by the server, and the refusals are the gate's own words.
+demo users, the real policy file, `gpt-4o-mini` behind `/api/chat`. Nothing is staged: the model
+picked its own tools, the figures came back from the API, the approval summaries are written by the
+server, and the refusals are the gate's own words.
 
 ### The ledger
 
@@ -85,9 +86,10 @@ and the model is left to explain a decision it did not make.
 
 ![A blocked card reading "cancel_invoice is not permitted for this user (write role=Viewer → deny)"](docs/screenshots/assistant-policy-denied.png)
 
-Asked for a bulk change, the model can iterate all it likes: the per-turn write limit stops the
-second call before it reaches the ledger, and the first is still only a proposal. This is what stops
-a prompt injection carried inside invoice data.
+Asked for two cancellations at once, the model duly issued two tool calls. The per-turn write limit
+stopped the second before it reached the ledger, and the first is still only a proposal — waiting on
+an Admin, because an Accountant cannot cancel. This is what stops a prompt injection carried inside
+invoice data.
 
 ![Two cancel_invoice calls, the second blocked by the one-change-per-turn limit](docs/screenshots/assistant-write-limit-blocked.png)
 
