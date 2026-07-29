@@ -112,9 +112,14 @@ jobs:
   # This is the only job that spends money, so it is the only one with an authorization gate:
   # the model is called solely for runs the repository owner triggers from a branch of this
   # repository. Anyone else's pull request — anyone's, on a public repo — runs every other job
-  # but never reaches the provider. The job itself always runs to completion so that its check is
+  # but never reaches the provider. It also spends nothing on changes no eval case could detect:
+  # a README, a screenshot, an ADR. The job itself always runs to completion so that its check is
   # always reported and can stay a required check for merging; when the gate closes, the run is
   # green with a loud warning instead of pending forever.
+  #
+  # That last part is why the path filter lives inside the gate rather than in `on:` or a job-level
+  # `if:`. Either of those would leave the check unreported, and a required check that never
+  # arrives blocks the merge it was meant to protect.
   #
   # Configure in the repository settings:
   #   variables: EVALS_MODEL (e.g. an inexpensive pinned model id)
@@ -157,6 +162,10 @@ jobs:
           REPO: ${{ github.repository }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -184,6 +193,32 @@ jobs:
 
           if [ -z "$EVALS_MODEL" ] || { { [ -z "$AZURE_OPENAI_ENDPOINT" ] || [ -z "$AZURE_OPENAI_API_KEY" ]; } && [ -z "$OPENAI_API_KEY" ]; }; then
             skip "EVALS_MODEL and provider credentials are not configured."
+          fi
+
+          # What the assistant's measured behaviour is actually made of: the app itself, the
+          # system prompt, the policy the gate reads, the cases and harness, and this file. A
+          # change confined to anything else — docs, screenshots, the Compose files — cannot move
+          # an eval case, so it does not deserve a model call. Listed as paths rather than
+          # inferred, because a case going quietly unrun is the failure mode worth avoiding.
+          RELEVANT='^(src/|prompts/|evals/|policies\.json$|\.github/workflows/ci\.yml$)'
+
+          # Asked of the API, not of a checkout: the gate still decides before the tree it was
+          # asked to evaluate is ever fetched.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            FILES=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[].filename') || FILES=""
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            FILES=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --jq '.files[].filename') || FILES=""
+          else
+            FILES=""
+          fi
+
+          # An empty answer means the question could not be asked — a new branch, a force push, a
+          # transient API failure — and the compare endpoint stops listing at 300 files. Both cases
+          # run the suite: a prompt regression reaching main costs more than a run of cheap tokens.
+          COUNT=$(printf '%s' "$FILES" | grep -c . || true)
+
+          if [ "$COUNT" -gt 0 ] && [ "$COUNT" -lt 300 ] && ! printf '%s\n' "$FILES" | grep -qE "$RELEVANT"; then
+            skip "no change under src/, prompts/, evals/, policies.json or this workflow — nothing an eval case could detect."
           fi
 
           echo "run=true" >> "$GITHUB_OUTPUT"
