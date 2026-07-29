@@ -28,6 +28,81 @@ flowchart TD
 
 The golden rule: **the system prompt can ask for good behavior; only the server can guarantee it.** The prompt is UX, the policy is security. Key decisions are documented as ADRs in [`docs/adr/`](docs/adr/).
 
+## What it looks like
+
+Every screenshot below is the running app against the seeded ledger — around 40 invoices, the three
+demo users, the real policy file. The figures come from tool calls against the API, the approval
+summaries are written by the server, and the refusals are the gate's own words.
+
+### The ledger
+
+Sign in as one of three seeded users. The role you pick is the role the assistant inherits.
+
+![The login screen listing the three demo users and what each may do](docs/screenshots/login-pick-a-user.png)
+
+The invoicing app itself: outstanding receivables and their aging on top, the ledger below, and the
+assistant docked to the right on every page.
+
+![The invoices page with the receivables strip, filters and the ledger table, next to the assistant drawer](docs/screenshots/invoice-ledger.png)
+
+Selecting an invoice opens its lines, its VAT and its total — all computed in the domain, never by
+the model.
+
+![Invoice 2026-0022 expanded, showing its two lines, subtotal, VAT and total](docs/screenshots/invoice-detail.png)
+
+Clicking an aging bucket narrows the ledger to the invoices in it, using the days-overdue figure the
+server sent.
+
+![The Over 60 days bucket selected, narrowing the table to its five overdue invoices](docs/screenshots/receivables-aging.png)
+
+### Asking the assistant
+
+A read question becomes a tool call. The chip names the tool while it runs, and every number in the
+answer came back from the API.
+
+![The assistant answering "How much are we owed?" with a get_receivables_summary tool chip and an aging table](docs/screenshots/assistant-reads-the-ledger.png)
+
+### The write gate
+
+Asking an Accountant's assistant to settle a €1,004.30 invoice does not settle it. The gate turns
+the tool call into a proposal with a five-minute window, described by the server rather than the
+model.
+
+![An approval card asking to confirm marking invoice 2026-0025 as paid, with Approve and Reject](docs/screenshots/assistant-approval-required.png)
+
+Approving is not the last word either. Policy allows an Accountant to confirm it; the API's own
+€1,000 settlement ceiling still refuses it, and nothing changes.
+
+![The approved action refused by the API, shown as a red resolved note in the transcript](docs/screenshots/assistant-ceiling-refusal.png)
+
+Under the ceiling, the same flow goes through: approve, and the write executes under the approver's
+identity.
+
+![Invoice 2026-0039 sent after approval, confirmed with the resulting customer and amount](docs/screenshots/assistant-approved-write.png)
+
+A Viewer's write never becomes a proposal at all. The policy denies it, the audit log records it,
+and the model is left to explain a decision it did not make.
+
+![A blocked card reading "cancel_invoice is not permitted for this user (write role=Viewer → deny)"](docs/screenshots/assistant-policy-denied.png)
+
+Asked for a bulk change, the model can iterate all it likes: the per-turn write limit stops the
+second call before it reaches the ledger, and the first is still only a proposal. This is what stops
+a prompt injection carried inside invoice data.
+
+![Two cancel_invoice calls, the second blocked by the one-change-per-turn limit](docs/screenshots/assistant-write-limit-blocked.png)
+
+### What it costs
+
+Every model call is metered where it happens, priced from a table in configuration and summed
+against the daily kill switch.
+
+![The usage page showing today's spend, the daily budget bar and one row per conversation](docs/screenshots/usage-per-conversation.png)
+
+Opening a conversation interleaves its model calls with the gate's decisions, so a refusal and the
+tokens spent around it sit on one timeline.
+
+![A conversation timeline showing two model calls either side of a denied cancel_invoice](docs/screenshots/usage-conversation-timeline.png)
+
 ## Repo structure
 
 ```text
@@ -42,7 +117,7 @@ invoice-assistant/
 │   └── cases/                    # Declarative *.yaml cases
 ├── prompts/system.md             # Versioned system prompt (hash per conversation)
 ├── policies.json                 # Write gate: structured rules, no DSL
-├── docs/                         # Architecture + ADRs + deployment
+├── docs/                         # Architecture + ADRs + deployment + screenshots
 ├── Dockerfile                    # SPA build → API publish → one runtime image
 ├── docker-compose.yml            # The whole demo, or just PostgreSQL for development
 ├── docker-compose.coolify.yml    # The same stack with the panel owning domain, TLS and proxy
