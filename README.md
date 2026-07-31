@@ -51,8 +51,9 @@ day's spend checked against the kill switch before each one.
 ![The usage page showing today's spend, the daily budget bar and one row per conversation](docs/screenshots/usage-per-conversation.png)
 
 The whole tour is in [**docs/screenshots.md**](docs/screenshots.md): the invoice detail and the
-aging buckets, an approved settlement still refused by the API's own ceiling, a Viewer's write
-denied by policy, and the per-turn limit stopping a bulk cancellation after its first call.
+aging buckets, the tool catalog a Viewer can open from the drawer, an approved settlement still
+refused by the API's own ceiling, a Viewer's write denied by policy, and the per-turn limit
+stopping a bulk cancellation after its first call.
 
 ## Repo structure
 

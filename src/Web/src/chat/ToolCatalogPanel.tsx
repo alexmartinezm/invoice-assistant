@@ -46,7 +46,9 @@ export function ToolCatalogPanel({ token }: { token: string }) {
     <section
       aria-label="Tool catalog"
       aria-busy={tools === null && !failed}
-      className="slide-in border-rule bg-sunken max-h-72 overflow-y-auto border-t px-4 py-3"
+      // Tall enough for the whole catalog on a normal screen, because its shortness is the point:
+      // a nine-row list read three rows at a time through a scrolling window argues the opposite.
+      className="slide-in border-rule bg-sunken max-h-[60vh] overflow-y-auto border-t px-4 py-3"
     >
       <h3 className="text-ink-faint font-mono text-[11px] tracking-wider uppercase">
         Tools{tools ? ` · ${tools.length}` : ''}

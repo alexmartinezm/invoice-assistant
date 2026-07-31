@@ -36,6 +36,14 @@ answer came back from `get_receivables_summary` rather than from the model's ari
 
 ![The assistant answering "How much are we owed?" with a get_receivables_summary tool chip and an aging table](screenshots/assistant-reads-the-ledger.png)
 
+Behind the role line in the drawer's footer sits the catalog itself, read from
+`GET /api/assistant/tools` — the same one the model is handed. Nine tools, four of them read-only,
+and nothing that deletes, operates in bulk, or touches more than the one invoice it names. This is
+a Viewer's session, so the role floor on each row is the one their assistant would have to clear:
+`cancel_invoice` says Admin, and no prompt changes that.
+
+![The tool catalog panel open in the drawer, listing four read tools and five write tools with their role floors and risk levels](screenshots/assistant-tool-catalog.png)
+
 ## The write gate
 
 Asking an Accountant's assistant to settle a €1,004.30 invoice does not settle it. Policy puts
