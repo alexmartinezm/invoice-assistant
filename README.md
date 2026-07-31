@@ -8,7 +8,7 @@
 
 1. **Tool calling with propagated identity** — the assistant can never do more than the logged-in user: its tools call our own REST API over HTTP with the user's bearer token.
 2. **Server-side write gate** — writes are proposed, not executed: human confirmation via `PendingAction`, structured policy in `policies.json`, prompt injection stopped by per-turn limits.
-3. **Evals in CI** — prompt regressions break the pipeline. Own xUnit harness, declarative YAML cases.
+3. **Evals in CI** — prompt regressions break the pipeline. Own xUnit harness, declarative YAML cases, and [a one-line regression you can run yourself](docs/ai/evaluation.md#proving-a-regression-turns-it-red).
 4. **Cost and traces per conversation** — tokens, euros, latency and OpenTelemetry, with a daily spend kill switch.
 
 ## Anatomy of a turn
