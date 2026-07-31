@@ -139,6 +139,10 @@ nothing about a scraper with many IPs — the euro cap is what makes a public de
 running with a real key in it. The reasoning, including what happens to a model with no configured
 price, is in [ADR 008](docs/adr/008-cost-accounting-and-the-spend-kill-switch.md).
 
+Traces are the other half of that piece. The chat footer prints each turn's trace id, and
+[`docs/deployment.md`](docs/deployment.md#seeing-the-traces) has the two ways to make that id lead
+somewhere — a console exporter, or any OTLP collector — plus what the spans and the meter carry.
+
 ## Roadmap
 
 - **F1 · Skeleton + reads** ✅ — domain with enforced transitions, seed, JWT auth, business
