@@ -1,5 +1,8 @@
 # Production-grade AI assistant in .NET: tool calling, write safety, evals & cost tracking
 
+[![CI](https://github.com/alexmartinezm/invoice-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/alexmartinezm/invoice-assistant/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **invoice-assistant** is a production-grade AI assistant embedded in a demo invoicing app. It is a reference repo: it demonstrates in code the pieces that separate a demo from a production system.
 
 > **Guiding principle: the LLM orchestrates but does not calculate.** The model decides which tool to call and writes responses; all calculations (totals, VAT, aging) and all security decisions live in deterministic server-side code.

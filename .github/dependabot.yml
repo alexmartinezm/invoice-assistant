@@ -1,0 +1,30 @@
+# Monthly and grouped on purpose. This is a reference repo rather than a service, so the useful
+# signal is "a dependency moved and CI still passes", not a pull request per patch release.
+version: 2
+
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      dotnet:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /src/Web
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      web:
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
