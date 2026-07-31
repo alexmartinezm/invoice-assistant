@@ -145,7 +145,7 @@ price, is in [ADR 008](docs/adr/008-cost-accounting-and-the-spend-kill-switch.md
   endpoints, SSE chat with read tools and propagated identity, invoices + chat UI.
 - **F2 · Write gate** ✅ — ToolPolicyEngine over `policies.json`, five gated write tools,
   PendingAction with approve/reject, AuditEvent, idempotency and per-turn limits.
-- **F3 · Evals + CI** ✅ — xUnit harness against a real model, 35 fact-based cases, CI job with
+- **F3 · Evals + CI** ✅ — xUnit harness against a real model, 36 fact-based cases, CI job with
   per-run token budget and markdown report; a one-line prompt regression turns the pipeline red.
 - **F4 · Cost, traces and polish** ✅ — UsageCollector metering every model call, global daily spend
   kill switch, Usage page with per-conversation cost timelines, OpenTelemetry traces and metrics,

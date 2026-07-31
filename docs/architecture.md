@@ -298,7 +298,7 @@ it up affordable.
 
 ## Keeping the assistant honest
 
-The behaviours this document promises are checked by 35 declarative eval cases that run against a
+The behaviours this document promises are checked by 36 declarative eval cases that run against a
 real model in CI (`evals/`): tool selection, writes always ending as proposals, role and amount
 limits, injection resistance, honest domain-error reporting and out-of-scope refusals. The asserts
 are facts — recorded tool calls, gate decisions, database diffs — never response prose, and one
