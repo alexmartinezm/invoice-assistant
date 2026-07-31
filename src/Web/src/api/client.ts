@@ -1,6 +1,7 @@
 import type {
   ActionOutcome,
   AppConfig,
+  AssistantTool,
   AuthenticatedUser,
   ChatEvent,
   ConversationUsageDetail,
@@ -108,6 +109,9 @@ export const api = {
    * one before it expired.
    */
   openActions: (token: string) => request<PendingActionView[]>('/api/actions', token),
+
+  /** The live tool catalog — the same one the model is given, metadata included. */
+  assistantTools: (token: string) => request<AssistantTool[]>('/api/assistant/tools', token),
 
   usageSummary: (token: string) => request<UsageSummary>('/api/usage/summary', token),
 

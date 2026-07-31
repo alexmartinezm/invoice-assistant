@@ -207,20 +207,36 @@ level deeper than the model expects.
 
 ## Tool catalog
 
-Every tool declares: `name`, `description`, args JSON schema, `sideEffect: read|write`, `requiredRole`, `riskLevel`.
+Every tool declares: `name`, `description`, args JSON schema, `sideEffect: read|write`,
+`requiredRole`, `riskLevel`. All of it, in catalog order, because the length of this table is the
+argument:
 
-**Read** (`defaults.read` is `allow`, so they execute): `list_invoices`, `get_invoice`,
-`search_customers`, `get_receivables_summary` (aging computed by the API, never by the model). They
-still pass through the gate, which is what makes `defaults.read` a real setting rather than
-decoration — a deployment can require confirmation for reads, or deny them for a role, without a
-code change.
+| Tool | Side effect | Required role | Risk |
+|---|---|---|---|
+| `list_invoices` | read | Viewer | low |
+| `get_invoice` | read | Viewer | low |
+| `search_customers` | read | Viewer | low |
+| `get_receivables_summary` | read | Viewer | low |
+| `create_draft_invoice` | write | Accountant | medium |
+| `send_invoice` | write | Accountant | medium |
+| `mark_invoice_paid` | write | Accountant | high |
+| `cancel_invoice` | write | Admin | high |
+| `update_due_date` | write | Accountant | medium |
 
-**Write** (confirmation unless an explicit rule applies): `create_draft_invoice`, `send_invoice`,
-`mark_invoice_paid`, `cancel_invoice`, `update_due_date`.
+Reads execute because `defaults.read` is `allow`, and `get_receivables_summary` computes the aging in
+the API, never in the model. They still pass through the gate, which is what makes `defaults.read` a
+real setting rather than decoration — a deployment can require confirmation for reads, or deny them
+for a role, without a code change. Writes require confirmation unless an explicit rule applies.
+
+`requiredRole` is the floor the policy engine matches on, not the whole story: an Accountant clears
+`mark_invoice_paid` and is still refused by the endpoint above the settlement ceiling.
 
 Tool parameter names are snake_case because they are a public contract: they appear in the schema
 sent to the model and in the eval cases under `evals/cases/`, so renaming one is a breaking change.
-`GET /api/assistant/tools` returns the live catalog with each tool's metadata.
+`GET /api/assistant/tools` returns the live catalog with each tool's metadata. The chat drawer reads
+it into a panel behind the role line in its footer, so the boundary is visible to the person using
+the assistant and not only to the person reading this file — a Viewer sees `cancel_invoice · Admin`
+without having to walk into the refusal.
 
 **Capability boundary:** there is no delete tool, no bulk operations, no admin, and no write that
 touches more than the one invoice the caller names. Whatever is not in the catalog is physically

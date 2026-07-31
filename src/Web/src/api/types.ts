@@ -86,6 +86,19 @@ export interface InvoiceFilters {
   overdue?: boolean;
 }
 
+/**
+ * One entry of `GET /api/assistant/tools` — the catalog the model is handed, with the metadata the
+ * policy engine decides on. This is the capability boundary: whatever is not in it cannot be asked
+ * for, whatever the prompt or the user says.
+ */
+export interface AssistantTool {
+  name: string;
+  description: string;
+  sideEffect: 'read' | 'write';
+  requiredRole: Role;
+  riskLevel: 'low' | 'medium' | 'high';
+}
+
 /** The events `POST /api/chat` streams over SSE. Mirrors `ChatEvent` on the server. */
 export type ChatEvent =
   | { type: 'conversation'; conversationId: string; traceId: string }

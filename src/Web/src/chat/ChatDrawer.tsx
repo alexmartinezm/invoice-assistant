@@ -5,6 +5,7 @@ import { useSession } from '../auth/useAuth';
 import { ApprovalCard } from './ApprovalCard';
 import { BlockCard } from './BlockCard';
 import { PendingInbox } from './PendingInbox';
+import { ToolCatalogPanel } from './ToolCatalogPanel';
 import { useChatStream, type ChatItem, type ToolRun } from './useChatStream';
 
 const suggestions = [
@@ -19,6 +20,7 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
     session.accessToken,
   );
   const [draft, setDraft] = useState('');
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -73,6 +75,10 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
         )}
       </div>
 
+      {/* Between the transcript and the composer, like the inbox above it: the catalog is a fact
+          about the assistant, not a message in the conversation. */}
+      {catalogOpen && <ToolCatalogPanel token={session.accessToken} />}
+
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -105,9 +111,24 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
           </button>
         </div>
 
-        <p className="text-ink-faint mt-2 flex items-center justify-between gap-2 font-mono text-[11px]">
-          <span>{session.user.role} · tools inherit this role</span>
-          {traceId && <span title="OpenTelemetry trace id">trace {traceId.slice(0, 12)}</span>}
+        {/* Wraps rather than squeezing: at 320px the role line and a trace id do not fit together,
+            and a clickable label reading on two lines looks like a bug rather than a control. */}
+        <p className="text-ink-faint mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 font-mono text-[11px]">
+          {/* The line already made the claim; now it opens the evidence for it. */}
+          <button
+            type="button"
+            onClick={() => setCatalogOpen((open) => !open)}
+            aria-expanded={catalogOpen}
+            className="hover:text-ink text-left whitespace-nowrap transition-colors"
+          >
+            {session.user.role} · tools inherit this role
+          </button>
+
+          {traceId && (
+            <span title="OpenTelemetry trace id" className="whitespace-nowrap">
+              trace {traceId.slice(0, 12)}
+            </span>
+          )}
         </p>
       </form>
     </aside>
