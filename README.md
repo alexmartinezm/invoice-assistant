@@ -1,5 +1,8 @@
 # Production-grade AI assistant in .NET: tool calling, write safety, evals & cost tracking
 
+[![CI](https://github.com/alexmartinezm/invoice-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/alexmartinezm/invoice-assistant/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **invoice-assistant** is a production-grade AI assistant embedded in a demo invoicing app. It is a reference repo: it demonstrates in code the pieces that separate a demo from a production system.
 
 > **Guiding principle: the LLM orchestrates but does not calculate.** The model decides which tool to call and writes responses; all calculations (totals, VAT, aging) and all security decisions live in deterministic server-side code.
@@ -8,7 +11,7 @@
 
 1. **Tool calling with propagated identity** — the assistant can never do more than the logged-in user: its tools call our own REST API over HTTP with the user's bearer token.
 2. **Server-side write gate** — writes are proposed, not executed: human confirmation via `PendingAction`, structured policy in `policies.json`, prompt injection stopped by per-turn limits.
-3. **Evals in CI** — prompt regressions break the pipeline. Own xUnit harness, declarative YAML cases.
+3. **Evals in CI** — prompt regressions break the pipeline. Own xUnit harness, declarative YAML cases, and [a one-line regression you can run yourself](docs/ai/evaluation.md#proving-a-regression-turns-it-red).
 4. **Cost and traces per conversation** — tokens, euros, latency and OpenTelemetry, with a daily spend kill switch.
 
 ## Anatomy of a turn
@@ -48,8 +51,9 @@ day's spend checked against the kill switch before each one.
 ![The usage page showing today's spend, the daily budget bar and one row per conversation](docs/screenshots/usage-per-conversation.png)
 
 The whole tour is in [**docs/screenshots.md**](docs/screenshots.md): the invoice detail and the
-aging buckets, an approved settlement still refused by the API's own ceiling, a Viewer's write
-denied by policy, and the per-turn limit stopping a bulk cancellation after its first call.
+aging buckets, the tool catalog a Viewer can open from the drawer, an approved settlement still
+refused by the API's own ceiling, a Viewer's write denied by policy, and the per-turn limit
+stopping a bulk cancellation after its first call.
 
 ## Repo structure
 
@@ -139,13 +143,17 @@ nothing about a scraper with many IPs — the euro cap is what makes a public de
 running with a real key in it. The reasoning, including what happens to a model with no configured
 price, is in [ADR 008](docs/adr/008-cost-accounting-and-the-spend-kill-switch.md).
 
+Traces are the other half of that piece. The chat footer prints each turn's trace id, and
+[`docs/deployment.md`](docs/deployment.md#seeing-the-traces) has the two ways to make that id lead
+somewhere — a console exporter, or any OTLP collector — plus what the spans and the meter carry.
+
 ## Roadmap
 
 - **F1 · Skeleton + reads** ✅ — domain with enforced transitions, seed, JWT auth, business
   endpoints, SSE chat with read tools and propagated identity, invoices + chat UI.
 - **F2 · Write gate** ✅ — ToolPolicyEngine over `policies.json`, five gated write tools,
   PendingAction with approve/reject, AuditEvent, idempotency and per-turn limits.
-- **F3 · Evals + CI** ✅ — xUnit harness against a real model, 35 fact-based cases, CI job with
+- **F3 · Evals + CI** ✅ — xUnit harness against a real model, 36 fact-based cases, CI job with
   per-run token budget and markdown report; a one-line prompt regression turns the pipeline red.
 - **F4 · Cost, traces and polish** ✅ — UsageCollector metering every model call, global daily spend
   kill switch, Usage page with per-conversation cost timelines, OpenTelemetry traces and metrics,

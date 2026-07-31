@@ -15,20 +15,61 @@ jobs:
       - name: Validate policies.json
         run: jq empty policies.json
 
-      - name: Validate eval cases are parseable YAML
+      # Two checks in one pass: the cases parse, and the case counts published in
+      # docs/ai/evaluation.md still match what is on disk. The second exists because they drifted —
+      # a case was added and the table was not — and a repo whose selling point is that it measures
+      # its assistant cannot be sloppy about how many measurements it claims to have.
+      - name: Validate the eval cases and the counts the docs publish
         run: |
           python3 - <<'EOF'
-          import glob, sys, yaml
+          import glob, re, sys, yaml
+          from collections import Counter
+
           cases = glob.glob("evals/cases/*.yaml")
           if not cases:
               sys.exit("no eval cases found")
+
+          tally = Counter()
           for path in cases:
               with open(path) as f:
                   doc = yaml.safe_load(f)
               for key in ("id", "category", "user", "prompt", "expect"):
                   if key not in doc:
                       sys.exit(f"{path}: missing key '{key}'")
+              tally[doc["category"]] += 1
+
           print(f"{len(cases)} cases OK")
+
+          doc_path = "docs/ai/evaluation.md"
+          with open(doc_path) as f:
+              text = f.read()
+
+          section = re.search(
+              r"^## Categories and volume \(v1 = (\d+) cases\)$(.*?)(?=^## |\Z)", text, re.M | re.S
+          )
+          if not section:
+              sys.exit(f"{doc_path}: no '## Categories and volume (v1 = N cases)' section to check against")
+
+          documented_total = int(section.group(1))
+          documented = {
+              m.group(1): int(m.group(2))
+              for m in re.finditer(r"^\| (\S+) \| (\d+) \|", section.group(2), re.M)
+          }
+
+          problems = []
+          if documented_total != len(cases):
+              problems.append(f"the heading says {documented_total} cases; evals/cases/ holds {len(cases)}")
+          for category in sorted(set(documented) | set(tally)):
+              if documented.get(category) != tally.get(category):
+                  problems.append(
+                      f"{category}: the table says {documented.get(category, 'nothing')}, "
+                      f"evals/cases/ holds {tally.get(category, 0)}"
+                  )
+
+          if problems:
+              sys.exit(f"{doc_path} disagrees with evals/cases/:\n  " + "\n  ".join(problems))
+
+          print(f"{doc_path} agrees: " + ", ".join(f"{c}={n}" for c, n in sorted(tally.items())))
           EOF
 
       - name: Agent context files present

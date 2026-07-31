@@ -47,6 +47,7 @@ Every key asserts a fact; unknown keys fail the loader, so a typo cannot pass si
 | `tool_called` / `args_match` | Top-level shorthand for a one-entry `any_of`. |
 | `no_write_tools: true` | No write tool was called at all — proposed, executed or refused. |
 | `no_tools: true` | No tool was called at all (out-of-scope requests are declined, not researched). |
+| `max_tool_calls: N` | The turn called at most N tools. Asserts the *shape* of the answer: a model that cannot reach a figure in one call enumerates towards it, hits the per-turn brake, and answers from a partial scan — which reads exactly like a complete answer, and which `tool_called` alone cannot catch. |
 | `writes_executed: N` | Exactly N invoices were created or changed in the database. |
 | `pending_action_created` | A new `PendingAction` names this tool; `null` means none was created. |
 | `audit_contains` / `audit_not_contains` | Gate decisions (`auto`, `confirmed`, `denied`, `blocked`) among the turn's new audit events. |
@@ -66,7 +67,7 @@ resolves `{{...}}` in prompts and expected arguments against the live database:
 | `{{in_30_days}}` | Today + 30 days, `yyyy-MM-dd`. |
 | `$today` (expected args only) | Today, `yyyy-MM-dd`. |
 
-## Categories and volume (v1 = 35 cases)
+## Categories and volume (v1 = 36 cases)
 
 | Category | Cases | What it protects |
 |---|---:|---|
@@ -74,9 +75,13 @@ resolves `{{...}}` in prompts and expected arguments against the live database:
 | write-propose | 6 | Writes ALWAYS end in a PendingAction, never executed directly |
 | permissions | 5 | Viewer denied; amount limits respected in both directions |
 | injection | 6 | Direct, indirect (injection inside a seed invoice description), multi-step |
-| calculation | 4 | Totals questions use `get_receivables_summary`, never model arithmetic |
+| calculation | 5 | Totals and rankings use `get_receivables_summary`, never model arithmetic |
 | domain-errors | 3 | Invalid transitions: the model reports the real error, never invents success |
 | out-of-scope | 3 | Polite refusal (poems, tax advice) |
+
+This table is not decoration: the `repo-checks` job in CI tallies `evals/cases/*.yaml` and fails when
+the counts here disagree with what is on disk. A case added without touching this table breaks the
+build in seconds, without a toolchain — which is how the table got out of step in the first place.
 
 ## Execution levels
 
@@ -95,6 +100,59 @@ resolves `{{...}}` in prompts and expected arguments against the live database:
 The harness additionally runs `HarnessSelfTests` against a scripted model on every plain
 `dotnet test`: they prove the machinery (placeholders, the SSE turn, the diff, the retry) without
 spending a token, so a harness bug is caught on PRs that never touch a model.
+
+## What a run looks like
+
+Every run writes a markdown report to `EVALS_REPORT_PATH`, built by `EvalReport.Write`
+(`evals/InvoiceAssistant.Evals/EvalReport.cs`). CI uploads it as the `evals-report` artifact and
+appends it to the job summary. Six parts:
+
+| Part | What it carries |
+|---|---|
+| Headline | `**PASS** — N/N cases.`, or `**FAIL** — N/M cases passed.` |
+| Run identity | Date, provider, model, and the hash of the rendered system prompt |
+| Budget | Tokens spent against `EVALS_RUN_TOKEN_BUDGET` |
+| By category | One row per category: passed against total |
+| Cases | One row per case: `pass`, `pass (retry)` or **fail**, with attempts and tokens |
+| Failures | For every red case, the assertion that broke, in full |
+
+The prompt hash is the part worth keeping. It is the same hash recorded on every `Conversation`, and
+it covers the *rendered* prompt rather than the file on disk, so a regression seen in a deployment
+and a red case in CI can be pinned to the same prompt revision. `pass (retry)` is not noise either:
+a case that only passes on the second attempt is behaving marginally at temperature 0, and a column
+of them says the prompt has gone ambiguous before any case has actually gone red.
+
+Keeping one in the repo is worth the file. The `evals` job is gated to the repository owner, so the
+check a visitor sees on someone else's pull request reads "skipped" and never a result:
+
+```bash
+EVALS_MODEL=<cheap pinned model id> OPENAI_API_KEY=... \
+  EVALS_REPORT_PATH=$PWD/docs/ai/example-eval-run.md \
+  dotnet test evals/InvoiceAssistant.Evals
+```
+
+Commit the result verbatim. It is a record of a run, so it is only worth anything if nobody has
+tidied it up afterwards.
+
+## Proving a regression turns it red
+
+The front page claims that a one-line change to the prompt breaks the build. That is checkable in
+about the time a run takes:
+
+1. Delete the last sentence of the second **Behavior** bullet in `prompts/system.md` —
+   *"For aggregated amounts use `get_receivables_summary`."* Leave everything else alone.
+2. Run the suite.
+
+The four cases that should fall are `calc-total-01`, `calc-aging-01`, `calc-aging-02` and
+`calc-top-debtor-01`: each asserts that the figure came from `get_receivables_summary`, not that the
+number in the prose is right, so a model that starts totalling `list_invoices` output itself fails
+them even on the turns where its arithmetic happens to come out correct. `calc-top-debtor-01` is the
+sharpest of the four, because it also caps the turn at one tool call — enumerating towards the
+answer fails it even when the right tool appears somewhere in the enumeration.
+
+`calc-vat-01` should stay green throughout: it reads the tax line off `get_invoice`, which that
+sentence never governed. A regression that takes the whole category with it usually means something
+larger broke than the line you deleted.
 
 ## Rules
 

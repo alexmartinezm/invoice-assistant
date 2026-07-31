@@ -116,6 +116,36 @@ call leaves the container, the proxy answers with a redirect to HTTPS, and .NET 
 `ASSISTANT_API_BASE_URL=http://localhost:8080` keeps that call inside the container, where it does
 not depend on how the outside world reaches the app. Both compose files set it.
 
+## Seeing the traces
+
+The chat footer prints the trace id of each turn, which is only useful if the id leads somewhere.
+Nothing is exported by default in production, so there are two ways to make it lead somewhere.
+
+The cheap one, for a local run: `OTEL_CONSOLE_EXPORTER=true` writes the spans to stdout. It is the
+default in Development, so `dotnet run` already has it.
+
+The real one: point `OTEL_EXPORTER_OTLP_ENDPOINT` at any OTLP collector. It takes both compose files
+without editing either, and no collector ships in them — a trace viewer is infrastructure you
+probably already have, and one more service in the demo's compose file is one more thing to explain.
+Anything speaking OTLP works; a throwaway one is a container away:
+
+```bash
+docker run -d --name aspire-dashboard -p 18888:18888 -p 4317:18889 \
+  mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+# then, on the app: OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317
+```
+
+What you get, per turn: `assistant.turn`, one `assistant.tool_call` per tool tagged with the gate's
+decision (`allowed`, `pending_approval`, `denied` or `blocked`), and one `assistant.model_call` per
+call to the model tagged with model, tokens, latency and cost. Metrics arrive on the same endpoint
+under the `InvoiceAssistant.Assistant` meter — model calls, tokens by direction, spend, budget
+rejections and unpriced calls — which is the only place the kill switch's counters are visible.
+
+One thing to know before you open the viewer: `assistant.turn` is a **sibling** of the tool and model
+spans rather than their parent, so a turn does not collapse into one subtree. Everything shares the
+request's trace id — the one the chat footer shows — so nothing is lost and correlation works. The
+reason, and what fixing it would take, is in [`architecture.md`](architecture.md#cost-traces-and-the-kill-switch).
+
 ## Checking a deploy
 
 ```bash
