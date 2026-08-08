@@ -1,5 +1,7 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Api.Domain;
+using Api.Infrastructure.Delivery;
 using Api.Features.Auth;
 using Api.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
@@ -126,7 +128,7 @@ public static class InvoiceEndpoints
         CancellationToken cancellationToken)
     {
         var invoice = await FindAsync(db, number, tracking: false, cancellationToken);
-        return invoice is null ? NotFound(number) : Detail(http, invoice, clock.Today);
+        return invoice is null ? NotFound(number) : await DetailAsync(http, db, invoice, clock.Today, cancellationToken);
     }
 
     private static async Task<IResult> CreateDraftAsync(
@@ -174,13 +176,92 @@ public static class InvoiceEndpoints
         return Results.Created($"/api/invoices/{invoice.Number}", created.ToDetail(clock.Today));
     }
 
-    private static Task<IResult> SendAsync(
+    /// <summary>
+    /// Moves the invoice out of draft and queues the delivery, in one transaction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Answers <c>202</c>, not <c>200</c>, and the difference is the honest part: the ledger change
+    /// is done, the email is not. Nothing here calls the provider — that would put somebody else's
+    /// network inside our transaction — so what commits is an <see cref="InvoiceDelivery"/> and the
+    /// outbox row that will carry it, alongside the status change and the idempotency receipt.
+    /// </para>
+    /// <para>
+    /// The response carries the delivery, so <c>Sent</c> never has to double as a claim that the
+    /// customer received anything.
+    /// </para>
+    /// </remarks>
+    private static async Task<IResult> SendAsync(
         string number,
         HttpContext http,
         AppDbContext db,
         IClock clock,
-        CancellationToken cancellationToken) =>
-        TransitionAsync(number, http, db, clock, cancellationToken, invoice => invoice.Send());
+        IOptions<InvoicingOptions> options,
+        CancellationToken cancellationToken)
+    {
+        var invoice = await FindAsync(db, number, tracking: true, cancellationToken);
+        if (invoice is null)
+        {
+            return NotFound(number);
+        }
+
+        if (InvoicePrecondition.Check(http.Request, invoice) is { } stale)
+        {
+            return stale;
+        }
+
+        invoice.Send();
+
+        var delivery = new InvoiceDelivery
+        {
+            InvoiceId = invoice.Id,
+            InvoiceNumber = invoice.Number,
+            ExecutionId = await ExecutionBehindAsync(http, db, cancellationToken),
+            ProviderKey = Guid.CreateVersion7().ToString(),
+            Recipient = invoice.Customer?.Email ?? string.Empty,
+            CreatedAt = clock.UtcNow,
+        };
+
+        var payload = new InvoiceDeliveryPayload(
+            invoice.Number,
+            delivery.Recipient,
+            invoice.Customer?.Name ?? string.Empty,
+            invoice.Total,
+            options.Value.Currency,
+            invoice.DueDate);
+
+        db.InvoiceDeliveries.Add(delivery);
+        db.OutboxMessages.Add(OutboxMessage.ForDelivery(
+            delivery, JsonSerializer.Serialize(payload, DeliveryJson), clock.UtcNow));
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(invoice.Revision);
+
+        return Results.Accepted(
+            $"/api/invoices/{invoice.Number}",
+            invoice.ToDetail(clock.Today, delivery));
+    }
+
+    /// <summary>
+    /// The assistant execution this request belongs to, if any. The idempotency key of an
+    /// assistant write <em>is</em> its execution id, so the delivery can be linked back without the
+    /// caller having to say so — and a key from curl or the SPA simply matches nothing.
+    /// </summary>
+    private static async Task<Guid?> ExecutionBehindAsync(
+        HttpContext http,
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(http.Request.Headers["Idempotency-Key"].ToString(), out var candidate))
+        {
+            return null;
+        }
+
+        return await db.ActionExecutions.AsNoTracking().AnyAsync(e => e.Id == candidate, cancellationToken)
+            ? candidate
+            : null;
+    }
 
     private static async Task<IResult> MarkPaidAsync(
         string number,
@@ -215,7 +296,7 @@ public static class InvoiceEndpoints
 
         invoice.MarkPaid(clock.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
-        return Detail(http, invoice, clock.Today);
+        return await DetailAsync(http, db, invoice, clock.Today, cancellationToken);
     }
 
     private static Task<IResult> CancelAsync(
@@ -260,18 +341,32 @@ public static class InvoiceEndpoints
 
         transition(invoice);
         await db.SaveChangesAsync(cancellationToken);
-        return Detail(http, invoice, clock.Today);
+        return await DetailAsync(http, db, invoice, clock.Today, cancellationToken);
     }
 
     /// <summary>
-    /// An invoice plus the ETag a later conditional write will be checked against. The two always
-    /// travel together, so a caller never has to guess which revision the body it is holding was.
+    /// An invoice, the ETag a later conditional write is checked against, and its delivery. All
+    /// three travel together so a caller never has to guess which revision the body it is holding
+    /// was, or read "Sent" as "the customer has it".
     /// </summary>
-    private static IResult Detail(HttpContext http, Invoice invoice, DateOnly today)
+    private static async Task<IResult> DetailAsync(
+        HttpContext http,
+        AppDbContext db,
+        Invoice invoice,
+        DateOnly today,
+        CancellationToken cancellationToken)
     {
+        var delivery = await db.InvoiceDeliveries.AsNoTracking()
+            .Where(d => d.InvoiceId == invoice.Id)
+            .OrderByDescending(d => d.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
         http.Response.Headers.ETag = InvoicePrecondition.ETagFor(invoice.Revision);
-        return Results.Ok(invoice.ToDetail(today));
+        return Results.Ok(invoice.ToDetail(today, delivery));
     }
+
+    /// <summary>The payload the outbox carries. Web defaults, so it round-trips as the API writes it.</summary>
+    private static readonly JsonSerializerOptions DeliveryJson = new(JsonSerializerDefaults.Web);
 
     private static Task<Invoice?> FindAsync(AppDbContext db, string number, bool tracking, CancellationToken cancellationToken)
     {

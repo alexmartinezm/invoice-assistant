@@ -38,6 +38,7 @@ public static class ChatClientRegistration
         services.AddScoped<ToolGate>();
         services.AddScoped<ActionExecutor>();
         services.AddScoped<Features.Actions.ActionResolver>();
+        services.AddScoped<Features.Actions.ActionNarrator>();
         services.AddScoped<TurnJournal>();
 
         services.AddTransient<ForwardCallerIdentityHandler>();

@@ -43,6 +43,21 @@ export interface InvoiceLine {
   amount: number;
 }
 
+/**
+ * Where the invoice's delivery got to, reported separately from the invoice's own status.
+ *
+ * `Sent` is a fact about our ledger; whether the customer received anything is a fact about
+ * somebody else's system. An invoice that reads Sent while its delivery reads queued, failed or
+ * unknown is not a contradiction — it is the truth.
+ */
+export interface InvoiceDeliveryView {
+  id: string;
+  status: 'queued' | 'delivered' | 'failed' | 'unknown';
+  attempts: number;
+  providerMessageId: string | null;
+  settledAt: string | null;
+}
+
 export interface InvoiceDetail extends InvoiceSummary {
   customerId: string;
   customerTaxId: string;
@@ -51,6 +66,7 @@ export interface InvoiceDetail extends InvoiceSummary {
   vatRate: number;
   vatAmount: number;
   paidAt: string | null;
+  delivery: InvoiceDeliveryView | null;
 }
 
 export interface InvoiceList {

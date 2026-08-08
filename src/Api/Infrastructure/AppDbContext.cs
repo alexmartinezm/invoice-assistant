@@ -20,6 +20,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ActionExecution> ActionExecutions => Set<ActionExecution>();
 
+    public DbSet<InvoiceDelivery> InvoiceDeliveries => Set<InvoiceDelivery>();
+
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
     public DbSet<UsageRecord> UsageRecords => Set<UsageRecord>();
@@ -168,6 +172,47 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             // Also json: this is replayed to a caller verbatim, and "the same answer as last time"
             // should mean the same bytes, not a re-ordered equivalent.
             execution.Property(e => e.ResultJson).HasColumnType("json");
+        });
+
+        modelBuilder.Entity<InvoiceDelivery>(delivery =>
+        {
+            delivery.ToTable("invoice_deliveries");
+            delivery.HasKey(d => d.Id);
+
+            // One delivery per provider key, enforced here rather than hoped for: the key is what
+            // the provider deduplicates on, and two rows sharing one would be two claims on one
+            // effect.
+            delivery.HasIndex(d => d.ProviderKey).IsUnique();
+            delivery.HasIndex(d => d.InvoiceId);
+
+            // The reconciler's queue.
+            delivery.HasIndex(d => d.Status);
+
+            delivery.Property(d => d.InvoiceNumber).HasMaxLength(20);
+            delivery.Property(d => d.ProviderKey).HasMaxLength(100);
+            delivery.Property(d => d.Recipient).HasMaxLength(200);
+            delivery.Property(d => d.Status).HasConversion<string>().HasMaxLength(20);
+            delivery.Property(d => d.ProviderMessageId).HasMaxLength(200);
+            delivery.Property(d => d.LastError).HasMaxLength(InvoiceDelivery.MaxErrorLength);
+        });
+
+        modelBuilder.Entity<OutboxMessage>(message =>
+        {
+            message.ToTable("outbox_messages");
+            message.HasKey(m => m.Id);
+
+            message.HasIndex(m => m.ProviderKey).IsUnique();
+
+            // The dispatcher's claim query, in the order it reads them.
+            message.HasIndex(m => new { m.Status, m.AvailableAt });
+            message.HasIndex(m => m.DeliveryId);
+
+            message.Property(m => m.Type).HasMaxLength(50);
+            message.Property(m => m.ProviderKey).HasMaxLength(100);
+            message.Property(m => m.Status).HasConversion<string>().HasMaxLength(20);
+            message.Property(m => m.LeaseOwner).HasMaxLength(150);
+            message.Property(m => m.LastError).HasMaxLength(OutboxMessage.MaxErrorLength);
+            message.Property(m => m.PayloadJson).HasColumnType("json");
         });
 
         modelBuilder.Entity<IdempotencyRecord>(record =>

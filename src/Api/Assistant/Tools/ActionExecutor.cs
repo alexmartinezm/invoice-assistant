@@ -95,7 +95,14 @@ public sealed class ActionExecutor(
             return await SettleAsync(execution, Ambiguous(execution), activity, cancellationToken);
         }
 
-        if (response.IsSuccess)
+        if (response.StatusCode is StatusCodes.Status202Accepted && DeliveryIn(response.Payload) is { } deliveryId)
+        {
+            // The local effect committed and handed off to an outbox. Nothing about the external
+            // effect is known yet, so the execution stays running rather than claiming a success
+            // the customer has not received.
+            execution.AwaitDelivery(deliveryId, response.StatusCode, response.Payload.GetRawText(), clock.UtcNow);
+        }
+        else if (response.IsSuccess)
         {
             execution.Succeed(response.StatusCode, response.Payload.GetRawText(), clock.UtcNow);
         }
@@ -249,6 +256,25 @@ public sealed class ActionExecutor(
         detail = "The request was sent and no answer came back, so it is not known whether it took effect. "
             + "Do not claim it succeeded or failed; say the outcome is being confirmed.",
     });
+
+    /// <summary>
+    /// The delivery a <c>202</c> handed off to.
+    /// </summary>
+    /// <remarks>
+    /// The status code carries the meaning, not the field. An invoice detail mentions its delivery
+    /// on every response — <c>mark-paid</c> included — and reading that as a hand-off would leave
+    /// executions waiting on somebody else's email. <c>202</c> is the endpoint saying "the local
+    /// part is done and the rest is on somebody else's network", which is a different outcome from
+    /// "done" and has to be classified as one.
+    /// </remarks>
+    private static Guid? DeliveryIn(JsonElement payload) =>
+        payload.ValueKind is JsonValueKind.Object
+            && payload.TryGetProperty("delivery", out var delivery)
+            && delivery.ValueKind is JsonValueKind.Object
+            && delivery.TryGetProperty("id", out var id)
+            && id.TryGetGuid(out var deliveryId)
+                ? deliveryId
+                : null;
 
     private static string? Detail(ApiResponse response) =>
         response.Payload.ValueKind is JsonValueKind.Object

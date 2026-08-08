@@ -40,4 +40,35 @@ public static class AssistantTelemetry
 
     public static readonly Histogram<double> ApprovalToEffectSeconds = Meter.CreateHistogram<double>(
         "assistant.approval_to_effect", unit: "s", description: "Time from a human's approval to a confirmed effect");
+
+    public static readonly Counter<long> IdempotencyOutcomes = Meter.CreateCounter<long>(
+        "assistant.idempotency_outcomes", description: "Idempotent write outcomes: replayed, mismatched or in progress");
+
+    public static readonly Counter<long> OutboxDispatched = Meter.CreateCounter<long>(
+        "assistant.outbox_dispatched", description: "Outbox rows a worker took and carried to the provider");
+
+    // Gauges rather than counters: how deep the queue is, how long the oldest thing in it has been
+    // waiting and how many outcomes nobody has confirmed are all states, not events, and none of
+    // them is a number you can add up. They read the last value the outbox worker published rather
+    // than querying on collection — a metrics scrape should not put load on the database it measures.
+    public static readonly ObservableGauge<long> OutboxQueueDepth = Meter.CreateObservableGauge(
+        "assistant.outbox_queue_depth", () => Volatile.Read(ref _queueDepth), description: "Outbox rows still waiting to be dispatched");
+
+    public static readonly ObservableGauge<double> OutboxOldestAgeSeconds = Meter.CreateObservableGauge(
+        "assistant.outbox_oldest_age", () => Volatile.Read(ref _oldestQueuedSeconds), unit: "s", description: "Age of the oldest undispatched outbox row");
+
+    public static readonly ObservableGauge<long> UnknownDeliveries = Meter.CreateObservableGauge(
+        "assistant.unknown_deliveries", () => Volatile.Read(ref _unknownDeliveries), description: "Deliveries whose outcome the provider has not confirmed");
+
+    private static long _queueDepth;
+    private static double _oldestQueuedSeconds;
+    private static long _unknownDeliveries;
+
+    /// <summary>Published by the outbox worker after each pass. Cheap, and never stale by more than a tick.</summary>
+    public static void PublishQueueState(long depth, double oldestQueuedSeconds, long unknownDeliveries)
+    {
+        Volatile.Write(ref _queueDepth, depth);
+        Volatile.Write(ref _oldestQueuedSeconds, oldestQueuedSeconds);
+        Volatile.Write(ref _unknownDeliveries, unknownDeliveries);
+    }
 }

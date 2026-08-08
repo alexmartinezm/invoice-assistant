@@ -15,6 +15,22 @@ public sealed record InvoiceSummary(
 
 public sealed record InvoiceLineView(string Description, decimal Quantity, decimal UnitPrice, decimal Amount);
 
+/// <summary>
+/// Where the invoice's delivery got to, reported separately from the invoice's own status.
+/// </summary>
+/// <remarks>
+/// <c>Sent</c> is a fact about our ledger and commits locally; whether the customer received
+/// anything is a fact about somebody else's system. An invoice that reads Sent while its delivery
+/// reads Queued, Failed or Unknown is not a contradiction — it is the truth, and hiding it behind
+/// one word is what would be dishonest.
+/// </remarks>
+public sealed record InvoiceDeliveryView(
+    Guid Id,
+    string Status,
+    int Attempts,
+    string? ProviderMessageId,
+    DateTimeOffset? SettledAt);
+
 public sealed record InvoiceDetail(
     string Number,
     Guid CustomerId,
@@ -31,7 +47,8 @@ public sealed record InvoiceDetail(
     decimal VatAmount,
     decimal Total,
     DateTimeOffset? PaidAt,
-    long Revision);
+    long Revision,
+    InvoiceDeliveryView? Delivery);
 
 /// <summary>
 /// Envelope for list responses. <c>asOf</c> travels with the payload because "overdue" is only
@@ -130,7 +147,7 @@ public static class InvoiceMapping
         invoice.Total,
         invoice.Revision);
 
-    public static InvoiceDetail ToDetail(this Invoice invoice, DateOnly today) => new(
+    public static InvoiceDetail ToDetail(this Invoice invoice, DateOnly today, InvoiceDelivery? delivery = null) => new(
         invoice.Number,
         invoice.CustomerId,
         invoice.Customer?.Name ?? string.Empty,
@@ -146,5 +163,13 @@ public static class InvoiceMapping
         invoice.VatAmount,
         invoice.Total,
         invoice.PaidAt,
-        invoice.Revision);
+        invoice.Revision,
+        delivery is null
+            ? null
+            : new InvoiceDeliveryView(
+                delivery.Id,
+                delivery.Status.ToString().ToLowerInvariant(),
+                delivery.Attempts,
+                delivery.ProviderMessageId,
+                delivery.SettledAt));
 }

@@ -11,6 +11,7 @@ using Api.Features.Customers;
 using Api.Features.Invoices;
 using Api.Features.Reports;
 using Api.Infrastructure;
+using Api.Infrastructure.Delivery;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -92,6 +93,14 @@ builder.Services.AddRateLimiter(limiter =>
 builder.Services.AddSingleton<IFaultInjector, NoFaults>();
 builder.Services.AddScoped<TransactionalIdempotencyFilter>();
 builder.Services.AddHostedService<IdempotencyCleanupService>();
+
+// The provider is a singleton because its receipts are its own: they stand in for state held on the
+// other side of the boundary, and putting them in our database would quietly make that boundary
+// transactional and the whole demonstration meaningless.
+builder.Services.AddSingleton<IInvoiceDeliveryProvider, DemoInvoiceDeliveryProvider>();
+builder.Services.AddScoped<OutboxDispatcher>();
+builder.Services.AddScoped<DeliveryReconciler>();
+builder.Services.AddHostedService<OutboxWorker>();
 
 // --- Cross-cutting ----------------------------------------------------------------------------
 builder.Services.AddProblemDetails();
