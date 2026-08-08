@@ -40,7 +40,7 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
     /// buries the data one level deeper than the model expects.
     /// </remarks>
     public async Task<JsonElement> GetJsonAsync(string relativeUrl, CancellationToken cancellationToken) =>
-        (await SendCoreAsync(HttpMethod.Get, relativeUrl, body: null, idempotencyKey: null, cancellationToken)).Payload;
+        (await SendCoreAsync(HttpMethod.Get, relativeUrl, body: null, idempotencyKey: null, ifMatch: null, cancellationToken)).Payload;
 
     /// <summary>
     /// Performs a write against our own API and reports the status alongside the payload.
@@ -50,19 +50,26 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
     /// model, by the middleware, or by a user clicking approve twice — replays the first answer
     /// instead of paying an invoice again because a socket hiccuped.
     /// </remarks>
+    /// <param name="ifMatch">
+    /// The resource revision the caller was authorized against, sent as <c>If-Match</c>. An approved
+    /// write carries one; a policy-allowed write does not, because nothing had time to change
+    /// between the decision and the request.
+    /// </param>
     public Task<ApiResponse> SendAsync(
         HttpMethod method,
         string relativeUrl,
         object? body,
         string idempotencyKey,
+        long? ifMatch,
         CancellationToken cancellationToken) =>
-        SendCoreAsync(method, relativeUrl, body, idempotencyKey, cancellationToken);
+        SendCoreAsync(method, relativeUrl, body, idempotencyKey, ifMatch, cancellationToken);
 
     private async Task<ApiResponse> SendCoreAsync(
         HttpMethod method,
         string relativeUrl,
         object? body,
         string? idempotencyKey,
+        long? ifMatch,
         CancellationToken cancellationToken)
     {
         var uri = new Uri(ResolveBaseAddress(), relativeUrl);
@@ -81,6 +88,11 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
         if (idempotencyKey is not null)
         {
             request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        }
+
+        if (ifMatch is { } revision)
+        {
+            request.Headers.TryAddWithoutValidation("If-Match", $"\"{revision}\"");
         }
 
         using var response = await http.SendAsync(request, cancellationToken);

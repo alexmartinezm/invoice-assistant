@@ -297,7 +297,7 @@ public static class ActionEndpoints
             return Outcome(action, execution, Message(action, execution), StoredResult(execution), clock.UtcNow);
         }
 
-        var attempt = await executor.RunAsync(execution, call, cancellationToken);
+        var attempt = await executor.RunAsync(execution, call, action.ExpectedResourceRevision, cancellationToken);
         var settled = attempt.Execution;
 
         if (settled.Status is ActionExecutionStatus.Failed)
@@ -356,11 +356,20 @@ public static class ActionEndpoints
     /// The sentence the user is shown, in the server's words. Five outcomes, five sentences: the
     /// copy is the only place a person learns that "approved" and "done" are not the same thing.
     /// </summary>
-    private static string Message(PendingAction action, ActionExecution execution) => execution.Status switch
+    private static string Message(PendingAction action, ActionExecution execution) => execution switch
     {
-        ActionExecutionStatus.Succeeded => $"Done: {action.Summary.ToLowerFirst()}.",
-        ActionExecutionStatus.Failed => $"{action.Summary} — approved, but the API refused it. Nothing changed.",
-        ActionExecutionStatus.Unknown =>
+        { Status: ActionExecutionStatus.Succeeded } => $"Done: {action.Summary.ToLowerFirst()}.",
+
+        // Its own sentence, because it is not a refusal and telling the user "the API said no" would
+        // send them looking for a permission problem. What happened is that the thing they were
+        // shown moved on, and the only honest answer is to ask again against what it is now.
+        { ErrorCode: "resource_changed" } =>
+            $"{action.Summary} — not done: the invoice changed after this was proposed, so the approval no "
+                + "longer matches what you were shown. Ask again to see the current state.",
+
+        { Status: ActionExecutionStatus.Failed } =>
+            $"{action.Summary} — approved, but the API refused it. Nothing changed.",
+        { Status: ActionExecutionStatus.Unknown } =>
             $"{action.Summary} — approved. The outcome is not confirmed yet; it is being reconciled.",
         _ => $"{action.Summary} — approved and running.",
     };

@@ -42,9 +42,13 @@ public sealed class ActionExecutor(
     /// <summary>How long before a reconciler looks at an execution whose answer was lost.</summary>
     public static readonly TimeSpan ReconcileDelay = TimeSpan.FromSeconds(15);
 
+    /// <param name="ifMatch">
+    /// The resource revision the approval was bound to, or null for a write nobody had to approve.
+    /// </param>
     public async Task<ExecutionAttempt> RunAsync(
         ActionExecution execution,
         ToolCall call,
+        long? ifMatch,
         CancellationToken cancellationToken)
     {
         using var activity = AssistantTelemetry.Source.StartActivity("assistant.action.execute");
@@ -78,7 +82,7 @@ public sealed class ActionExecutor(
 
         try
         {
-            response = await api.SendAsync(call.Method, call.Url, call.Body, execution.IdempotencyKey, cancellationToken);
+            response = await api.SendAsync(call.Method, call.Url, call.Body, execution.IdempotencyKey, ifMatch, cancellationToken);
         }
         catch (Exception exception) when (exception is HttpRequestException or IOException or TaskCanceledException)
         {

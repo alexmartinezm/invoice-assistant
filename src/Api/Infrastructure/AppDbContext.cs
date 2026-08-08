@@ -59,6 +59,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             invoice.Property(i => i.VatAmount).HasPrecision(18, 2);
             invoice.Property(i => i.Total).HasPrecision(18, 2);
 
+            // The domain bumps it; EF puts the original value in the WHERE clause of every update,
+            // so a second writer changing the same invoice raises rather than overwriting.
+            invoice.Property(i => i.Revision).IsConcurrencyToken();
+
             invoice.HasOne(i => i.Customer)
                 .WithMany()
                 .HasForeignKey(i => i.CustomerId)
@@ -128,7 +132,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             action.Property(p => p.Summary).HasMaxLength(500);
             action.Property(p => p.Status).HasConversion<string>().HasMaxLength(20);
             action.Property(p => p.ResolutionReason).HasConversion<string>().HasMaxLength(30);
-            action.Property(p => p.ArgsJson).HasColumnType("jsonb");
+            // json, not jsonb, and this is load-bearing. jsonb normalises what it stores — key
+            // order, whitespace, duplicate keys — so the bytes that come back are not the bytes that
+            // went in. CommandHash is computed over the stored arguments precisely so an approval can
+            // be tied to them, and a hash of text the database is free to rewrite proves nothing.
+            // Nothing queries inside this column, so jsonb bought nothing to begin with.
+            action.Property(p => p.ArgsJson).HasColumnType("json");
             action.Property(p => p.CommandHash).HasMaxLength(64).IsFixedLength();
         });
 
@@ -156,7 +165,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             execution.Property(e => e.ErrorCode).HasMaxLength(50);
             execution.Property(e => e.ErrorDetail).HasMaxLength(ActionExecution.MaxErrorDetail);
             execution.Property(e => e.ProviderMessageId).HasMaxLength(200);
-            execution.Property(e => e.ResultJson).HasColumnType("jsonb");
+            // Also json: this is replayed to a caller verbatim, and "the same answer as last time"
+            // should mean the same bytes, not a re-ordered equivalent.
+            execution.Property(e => e.ResultJson).HasColumnType("json");
         });
 
         modelBuilder.Entity<IdempotencyRecord>(record =>
@@ -174,7 +185,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             record.Property(r => r.Key).HasMaxLength(TransactionalIdempotencyFilter.MaxKeyLength);
             record.Property(r => r.Operation).HasMaxLength(200);
             record.Property(r => r.RequestHash).HasMaxLength(64).IsFixedLength();
-            record.Property(r => r.ResponseJson).HasColumnType("jsonb");
+            record.Property(r => r.ResponseJson).HasColumnType("json");
         });
 
         modelBuilder.Entity<UsageRecord>(usage =>

@@ -142,7 +142,9 @@ public sealed class ToolGate(
             new KeyValuePair<string, object?>("tool", tool.Name),
             new KeyValuePair<string, object?>("decision", nameof(ExecutionDecision.Auto)));
 
-        var attempt = await executor.RunAsync(execution, call, cancellationToken);
+        // No precondition on this path: policy allowed it here and now, so there is no window
+        // between the decision and the request for the invoice to have changed in.
+        var attempt = await executor.RunAsync(execution, call, ifMatch: null, cancellationToken);
         return attempt.Payload;
     }
 
@@ -291,15 +293,21 @@ public sealed class ToolGate(
         var now = clock.UtcNow;
         var argsJson = args.GetRawText();
 
+        // The state the person is about to agree to. Five minutes later the invoice may have been
+        // cancelled by somebody else, and the same arguments would then mean something the user
+        // never saw — so the approval carries the revision and the write fails closed on a change.
+        var revision = await TargetRevisionAsync(tool.Name, args, cancellationToken);
+
         var action = new PendingAction
         {
             UserId = userId,
             ConversationId = journal.ConversationId,
             ToolName = tool.Name,
             ArgsJson = argsJson,
+            ExpectedResourceRevision = revision,
             // Hashed over the bytes that will be stored, not over the object they came from: the
             // approval is a promise about what gets replayed, and replay reads these bytes back.
-            CommandHash = Domain.CommandHash.Of(tool.Name, argsJson, expectedResourceRevision: null),
+            CommandHash = Domain.CommandHash.Of(tool.Name, argsJson, revision),
             Summary = await describe(cancellationToken),
             CreatedAt = now,
             ExpiresAt = now + ApprovalWindow,
@@ -339,6 +347,24 @@ public sealed class ToolGate(
                     : $"Nothing has changed yet. Say in one line that this needs an {tool.RequiredRole} to approve it, then stop.",
             },
             Json);
+    }
+
+    /// <summary>
+    /// The revision of the invoice a command targets, or null when it has no existing target or the
+    /// target does not exist. A missing invoice is not an error here: the approval simply carries no
+    /// precondition, and the API answers 404 when it runs.
+    /// </summary>
+    private async Task<long?> TargetRevisionAsync(string toolName, JsonElement args, CancellationToken cancellationToken)
+    {
+        if (WriteToolPlans.TargetNumber(toolName, args) is not { Length: > 0 } number)
+        {
+            return null;
+        }
+
+        return await db.Invoices.AsNoTracking()
+            .Where(invoice => invoice.Number == number)
+            .Select(invoice => (long?)invoice.Revision)
+            .SingleOrDefaultAsync(cancellationToken);
     }
 
     private static JsonElement Error(string error, string reason) =>

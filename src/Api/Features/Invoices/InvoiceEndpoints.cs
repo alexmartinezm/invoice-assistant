@@ -120,16 +120,18 @@ public static class InvoiceEndpoints
 
     private static async Task<IResult> GetAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken)
     {
         var invoice = await FindAsync(db, number, tracking: false, cancellationToken);
-        return invoice is null ? NotFound(number) : Results.Ok(invoice.ToDetail(clock.Today));
+        return invoice is null ? NotFound(number) : Detail(http, invoice, clock.Today);
     }
 
     private static async Task<IResult> CreateDraftAsync(
         CreateInvoiceRequest request,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         IOptions<InvoicingOptions> options,
@@ -167,18 +169,22 @@ public static class InvoiceEndpoints
         await db.SaveChangesAsync(cancellationToken);
 
         var created = await FindAsync(db, invoice.Number, tracking: false, cancellationToken);
-        return Results.Created($"/api/invoices/{invoice.Number}", created!.ToDetail(clock.Today));
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(created!.Revision);
+
+        return Results.Created($"/api/invoices/{invoice.Number}", created.ToDetail(clock.Today));
     }
 
     private static Task<IResult> SendAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken) =>
-        TransitionAsync(number, db, clock, cancellationToken, invoice => invoice.Send());
+        TransitionAsync(number, http, db, clock, cancellationToken, invoice => invoice.Send());
 
     private static async Task<IResult> MarkPaidAsync(
         string number,
+        HttpContext http,
         ClaimsPrincipal principal,
         AppDbContext db,
         IClock clock,
@@ -189,6 +195,11 @@ public static class InvoiceEndpoints
         if (invoice is null)
         {
             return NotFound(number);
+        }
+
+        if (InvoicePrecondition.Check(http.Request, invoice) is { } stale)
+        {
+            return stale;
         }
 
         var limit = options.Value.AccountantMarkPaidLimit;
@@ -204,23 +215,25 @@ public static class InvoiceEndpoints
 
         invoice.MarkPaid(clock.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
-        return Results.Ok(invoice.ToDetail(clock.Today));
+        return Detail(http, invoice, clock.Today);
     }
 
     private static Task<IResult> CancelAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken) =>
-        TransitionAsync(number, db, clock, cancellationToken, invoice => invoice.Cancel());
+        TransitionAsync(number, http, db, clock, cancellationToken, invoice => invoice.Cancel());
 
     private static Task<IResult> UpdateDueDateAsync(
         string number,
         UpdateDueDateRequest request,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken) =>
-        TransitionAsync(number, db, clock, cancellationToken, invoice => invoice.ChangeDueDate(request.DueDate));
+        TransitionAsync(number, http, db, clock, cancellationToken, invoice => invoice.ChangeDueDate(request.DueDate));
 
     /// <summary>
     /// Load, apply the aggregate method, save. The transition rules themselves live in
@@ -228,6 +241,7 @@ public static class InvoiceEndpoints
     /// </summary>
     private static async Task<IResult> TransitionAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken,
@@ -239,9 +253,24 @@ public static class InvoiceEndpoints
             return NotFound(number);
         }
 
+        if (InvoicePrecondition.Check(http.Request, invoice) is { } stale)
+        {
+            return stale;
+        }
+
         transition(invoice);
         await db.SaveChangesAsync(cancellationToken);
-        return Results.Ok(invoice.ToDetail(clock.Today));
+        return Detail(http, invoice, clock.Today);
+    }
+
+    /// <summary>
+    /// An invoice plus the ETag a later conditional write will be checked against. The two always
+    /// travel together, so a caller never has to guess which revision the body it is holding was.
+    /// </summary>
+    private static IResult Detail(HttpContext http, Invoice invoice, DateOnly today)
+    {
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(invoice.Revision);
+        return Results.Ok(invoice.ToDetail(today));
     }
 
     private static Task<Invoice?> FindAsync(AppDbContext db, string number, bool tracking, CancellationToken cancellationToken)

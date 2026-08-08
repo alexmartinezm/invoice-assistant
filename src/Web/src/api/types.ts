@@ -32,6 +32,8 @@ export interface InvoiceSummary {
   issueDate: string;
   dueDate: string;
   total: number;
+  /** The invoice's ETag. An approved assistant write only lands if this has not moved. */
+  revision: number;
 }
 
 export interface InvoiceLine {

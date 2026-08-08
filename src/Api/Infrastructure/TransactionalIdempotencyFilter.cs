@@ -253,7 +253,7 @@ public sealed class TransactionalIdempotencyFilter(
         db.Database.ExecuteSqlAsync(
             $"""
             UPDATE idempotency_keys
-            SET "StatusCode" = {status}, "ResponseJson" = {responseJson}::jsonb, "CompletedAt" = {clock.UtcNow}
+            SET "StatusCode" = {status}, "ResponseJson" = {responseJson}::json, "CompletedAt" = {clock.UtcNow}
             WHERE "UserId" = {userId} AND "Key" = {key}
             """,
             cancellationToken);

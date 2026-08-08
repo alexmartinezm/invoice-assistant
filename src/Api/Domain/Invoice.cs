@@ -39,6 +39,28 @@ public sealed class Invoice
 
     public DateTimeOffset? PaidAt { get; private set; }
 
+    /// <summary>
+    /// How many times this invoice has been changed. Starts at 1 and is bumped by every mutation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It is the invoice's ETag, and the thing an approval is bound to. The assistant's approval
+    /// window is five minutes, and "mark 2026-0041 as paid" agreed to five minutes ago is not the
+    /// same instruction if somebody has cancelled the invoice in between — the arguments are
+    /// identical and the situation is not. The approval carries the revision it was proposed
+    /// against and the write fails closed on a mismatch.
+    /// </para>
+    /// <para>
+    /// Application-managed rather than a database <c>xmin</c>: the value travels in an HTTP header
+    /// and back into a stored approval, so it has to be a number this code owns and can reason
+    /// about, not a provider detail. It is mapped as an EF concurrency token, which puts the
+    /// original value into the <c>WHERE</c> clause of every update — so two writers racing on one
+    /// invoice is a <see cref="Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException"/> rather
+    /// than a silent last-writer-wins.
+    /// </para>
+    /// </remarks>
+    public long Revision { get; private set; } = 1;
+
     public static string FormatNumber(int year, int sequence) =>
         string.Create(CultureInfo.InvariantCulture, $"{year:0000}-{sequence:0000}");
 
@@ -108,6 +130,7 @@ public sealed class Invoice
         }
 
         Status = InvoiceStatus.Sent;
+        Revision++;
     }
 
     public void MarkPaid(DateTimeOffset paidAt)
@@ -121,6 +144,7 @@ public sealed class Invoice
 
         Status = InvoiceStatus.Paid;
         PaidAt = paidAt;
+        Revision++;
     }
 
     public void Cancel()
@@ -133,6 +157,7 @@ public sealed class Invoice
         }
 
         Status = InvoiceStatus.Cancelled;
+        Revision++;
     }
 
     public void ChangeDueDate(DateOnly newDueDate)
@@ -152,6 +177,7 @@ public sealed class Invoice
         }
 
         DueDate = newDueDate;
+        Revision++;
     }
 
     private void AddLine(NewInvoiceLine line)

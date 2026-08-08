@@ -70,6 +70,22 @@ public static class WriteToolPlans
     public static ToolIdentity? Find(string toolName) => WriteToolCatalog.All
         .FirstOrDefault(tool => string.Equals(tool.Name, toolName, StringComparison.Ordinal));
 
+    /// <summary>
+    /// The invoice a command acts on, if it acts on an existing one.
+    /// </summary>
+    /// <remarks>
+    /// Used to capture the target's revision when a proposal is made, so the approval can be bound
+    /// to the invoice the person was actually looking at. <c>create_draft_invoice</c> has no target
+    /// — there is nothing yet for anybody to have changed underneath it — so it returns null and
+    /// the approval carries no precondition.
+    /// </remarks>
+    public static string? TargetNumber(string toolName, JsonElement args) => toolName switch
+    {
+        "send_invoice" or "mark_invoice_paid" or "cancel_invoice" or "update_due_date" =>
+            args.TryGetProperty("number", out var number) ? number.GetString() : null,
+        _ => null,
+    };
+
     private static string Text(JsonElement element, string property) =>
         element.GetProperty(property).GetString()
         ?? throw new InvalidOperationException($"Frozen arguments are missing '{property}'.");

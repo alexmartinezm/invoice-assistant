@@ -10,7 +10,8 @@ public sealed record InvoiceSummary(
     int DaysOverdue,
     DateOnly IssueDate,
     DateOnly DueDate,
-    decimal Total);
+    decimal Total,
+    long Revision);
 
 public sealed record InvoiceLineView(string Description, decimal Quantity, decimal UnitPrice, decimal Amount);
 
@@ -29,7 +30,8 @@ public sealed record InvoiceDetail(
     decimal VatRate,
     decimal VatAmount,
     decimal Total,
-    DateTimeOffset? PaidAt);
+    DateTimeOffset? PaidAt,
+    long Revision);
 
 /// <summary>
 /// Envelope for list responses. <c>asOf</c> travels with the payload because "overdue" is only
@@ -67,6 +69,54 @@ public sealed record CreateInvoiceRequest(
 
 public sealed record UpdateDueDateRequest(DateOnly DueDate);
 
+/// <summary>
+/// The <c>If-Match</c> precondition on an invoice write, and the <c>ETag</c> that produces it.
+/// </summary>
+/// <remarks>
+/// An invoice's ETag is its <see cref="Invoice.Revision"/>. Approved assistant writes send the
+/// revision captured when the proposal was made, so a write can only land on the invoice the person
+/// was actually looking at. A mismatch is <c>412 resource_changed</c> and the server does not
+/// refresh and retry: executing against state the user never saw is precisely what asking them was
+/// meant to prevent.
+/// </remarks>
+public static class InvoicePrecondition
+{
+    public static string ETagFor(long revision) => $"\"{revision}\"";
+
+    /// <summary>
+    /// Reads the header, tolerating both the quoted form HTTP specifies and the bare number a
+    /// hand-written curl is likely to send. Absent means "no precondition", which is allowed.
+    /// </summary>
+    public static bool TryRead(HttpRequest request, out long revision)
+    {
+        revision = 0;
+
+        var value = request.Headers.IfMatch.ToString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return long.TryParse(value.Trim().TrimStart('W', '/').Trim('"'), out revision);
+    }
+
+    /// <summary>Null when the write may proceed, otherwise the refusal to return.</summary>
+    public static IResult? Check(HttpRequest request, Invoice invoice)
+    {
+        if (!TryRead(request, out var expected) || expected == invoice.Revision)
+        {
+            return null;
+        }
+
+        return Results.Problem(
+            title: "The invoice changed",
+            detail: $"{invoice.Number} was at revision {expected} when this was proposed and is now at "
+                + $"{invoice.Revision}. Nothing was changed. Ask for it again so the new state can be approved.",
+            statusCode: StatusCodes.Status412PreconditionFailed,
+            extensions: new Dictionary<string, object?> { ["code"] = "resource_changed" });
+    }
+}
+
 public static class InvoiceMapping
 {
     public static InvoiceSummary ToSummary(this Invoice invoice, DateOnly today) => new(
@@ -77,7 +127,8 @@ public static class InvoiceMapping
         invoice.DaysOverdue(today),
         invoice.IssueDate,
         invoice.DueDate,
-        invoice.Total);
+        invoice.Total,
+        invoice.Revision);
 
     public static InvoiceDetail ToDetail(this Invoice invoice, DateOnly today) => new(
         invoice.Number,
@@ -94,5 +145,6 @@ public static class InvoiceMapping
         invoice.VatRate,
         invoice.VatAmount,
         invoice.Total,
-        invoice.PaidAt);
+        invoice.PaidAt,
+        invoice.Revision);
 }
