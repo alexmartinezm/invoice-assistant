@@ -1,11 +1,37 @@
 namespace Api.Domain;
 
+/// <summary>
+/// The authorization decision on a proposed write.
+/// </summary>
+/// <remarks>
+/// <see cref="Approved"/> records that somebody said yes, and nothing more. Whether the work then
+/// happened lives in <see cref="ActionExecution"/>: collapsing the two was the bug F5 exists to fix,
+/// so this enum must never grow an execution outcome.
+/// </remarks>
 public enum PendingActionStatus
 {
     Pending,
     Approved,
     Rejected,
     Expired,
+}
+
+/// <summary>Why a proposal stopped being open, in a vocabulary an audit reader can filter on.</summary>
+public enum ActionResolutionReason
+{
+    UserApproved,
+    UserRejected,
+
+    /// <summary>Policy refused it at approval time, which a rule or role change can produce.</summary>
+    PolicyDenied,
+
+    Expired,
+
+    /// <summary>
+    /// Closed by a deployment rather than by a person: a proposal from an older build that cannot
+    /// be replayed against this one. Never executed — see the note in <c>WriteToolPlans.Replay</c>.
+    /// </summary>
+    DeploymentUpgrade,
 }
 
 /// <summary>
@@ -31,6 +57,21 @@ public sealed class PendingAction
     public required string ArgsJson { get; init; }
 
     /// <summary>
+    /// The fingerprint of tool, frozen arguments and captured revision — see
+    /// <see cref="Domain.CommandHash"/>. It travels onto the execution, so the attempt can be tied
+    /// back to the exact sentence a person agreed to.
+    /// </summary>
+    public required string CommandHash { get; init; }
+
+    /// <summary>
+    /// The target's <see cref="Invoice.Revision"/> when this was proposed, or null when the command
+    /// has no existing target (<c>create_draft_invoice</c>). Approving sends it as <c>If-Match</c>:
+    /// an invoice somebody edited during the approval window is a different invoice, and the write
+    /// fails closed rather than landing on state the user never saw.
+    /// </summary>
+    public long? ExpectedResourceRevision { get; init; }
+
+    /// <summary>
     /// What the person is agreeing to, in their own terms — "Mark invoice 2026-0041 (Acme Ibérica
     /// SL, €1,240.50) as paid". Built by the server from resolved data, never by the model.
     /// </summary>
@@ -47,6 +88,8 @@ public sealed class PendingAction
 
     public DateTimeOffset? ResolvedAt { get; private set; }
 
+    public ActionResolutionReason? ResolutionReason { get; private set; }
+
     public bool IsOpen(DateTimeOffset now) => Status is PendingActionStatus.Pending && now < ExpiresAt;
 
     /// <summary>
@@ -62,9 +105,7 @@ public sealed class PendingAction
             return false;
         }
 
-        Status = PendingActionStatus.Approved;
-        ResolvedByUserId = approverId;
-        ResolvedAt = now;
+        Resolve(PendingActionStatus.Approved, ActionResolutionReason.UserApproved, approverId, now);
         return true;
     }
 
@@ -76,18 +117,27 @@ public sealed class PendingAction
             return false;
         }
 
-        Status = PendingActionStatus.Rejected;
+        Resolve(PendingActionStatus.Rejected, ActionResolutionReason.UserRejected, approverId, now);
+        return true;
+    }
+
+    private void Resolve(
+        PendingActionStatus status,
+        ActionResolutionReason reason,
+        Guid? approverId,
+        DateTimeOffset now)
+    {
+        Status = status;
+        ResolutionReason = reason;
         ResolvedByUserId = approverId;
         ResolvedAt = now;
-        return true;
     }
 
     private void Expire(DateTimeOffset now)
     {
         if (Status is PendingActionStatus.Pending && now >= ExpiresAt)
         {
-            Status = PendingActionStatus.Expired;
-            ResolvedAt = now;
+            Resolve(PendingActionStatus.Expired, ActionResolutionReason.Expired, approverId: null, now);
         }
     }
 }

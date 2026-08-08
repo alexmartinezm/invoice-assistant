@@ -18,6 +18,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<PendingAction> PendingActions => Set<PendingAction>();
 
+    public DbSet<ActionExecution> ActionExecutions => Set<ActionExecution>();
+
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
     public DbSet<UsageRecord> UsageRecords => Set<UsageRecord>();
@@ -125,7 +127,36 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             action.Property(p => p.ToolName).HasMaxLength(50);
             action.Property(p => p.Summary).HasMaxLength(500);
             action.Property(p => p.Status).HasConversion<string>().HasMaxLength(20);
+            action.Property(p => p.ResolutionReason).HasConversion<string>().HasMaxLength(30);
             action.Property(p => p.ArgsJson).HasColumnType("jsonb");
+            action.Property(p => p.CommandHash).HasMaxLength(64).IsFixedLength();
+        });
+
+        modelBuilder.Entity<ActionExecution>(execution =>
+        {
+            execution.ToTable("action_executions");
+            execution.HasKey(e => e.Id);
+
+            // The database backstop for "a confirmed action has at most one execution". The
+            // compare-and-set in ActionResolver is what normally decides the race; this is what
+            // holds if a future caller forgets to go through it.
+            execution.HasIndex(e => e.PendingActionId)
+                .IsUnique()
+                .HasFilter("\"PendingActionId\" IS NOT NULL");
+
+            // History for a user, the reconciler's queue, and correlation with a conversation.
+            execution.HasIndex(e => new { e.UserId, e.CreatedAt });
+            execution.HasIndex(e => new { e.Status, e.NextAttemptAt });
+            execution.HasIndex(e => e.ConversationId);
+
+            execution.Property(e => e.ToolName).HasMaxLength(50);
+            execution.Property(e => e.Status).HasConversion<string>().HasMaxLength(20);
+            execution.Property(e => e.Decision).HasConversion<string>().HasMaxLength(20);
+            execution.Property(e => e.CommandHash).HasMaxLength(64).IsFixedLength();
+            execution.Property(e => e.ErrorCode).HasMaxLength(50);
+            execution.Property(e => e.ErrorDetail).HasMaxLength(ActionExecution.MaxErrorDetail);
+            execution.Property(e => e.ProviderMessageId).HasMaxLength(200);
+            execution.Property(e => e.ResultJson).HasColumnType("jsonb");
         });
 
         modelBuilder.Entity<IdempotencyRecord>(record =>

@@ -241,12 +241,17 @@ public sealed class ToolGate(
         CancellationToken cancellationToken)
     {
         var now = clock.UtcNow;
+        var argsJson = args.GetRawText();
+
         var action = new PendingAction
         {
             UserId = userId,
             ConversationId = journal.ConversationId,
             ToolName = tool.Name,
-            ArgsJson = args.GetRawText(),
+            ArgsJson = argsJson,
+            // Hashed over the bytes that will be stored, not over the object they came from: the
+            // approval is a promise about what gets replayed, and replay reads these bytes back.
+            CommandHash = Domain.CommandHash.Of(tool.Name, argsJson, expectedResourceRevision: null),
             Summary = await describe(cancellationToken),
             CreatedAt = now,
             ExpiresAt = now + ApprovalWindow,

@@ -547,6 +547,7 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
             UserId = userId,
             ToolName = toolName,
             ArgsJson = argsJson,
+            CommandHash = CommandHash.Of(toolName, argsJson, expectedResourceRevision: null),
             Summary = $"Replay {toolName}",
             CreatedAt = factory.Clock.UtcNow,
             ExpiresAt = factory.Clock.UtcNow.AddMinutes(5),
