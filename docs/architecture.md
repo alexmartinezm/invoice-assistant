@@ -26,6 +26,34 @@ Added by cost accounting (F4):
   costEur, latencyMs, createdAt — one row per **model call**, not per turn, because a turn that uses
   tools makes several (ADR 008).
 
+Added by durable actions (F5), which splits one status into three facts (ADR 009):
+
+- **ActionExecution**: id (UUIDv7, and the `Idempotency-Key` every attempt of it sends),
+  pendingActionId? (unique when present), userId, conversationId?, toolName, decision
+  (`auto|confirmed`), commandHash, status (`pending|executing|succeeded|failed|unknown`),
+  attemptCount, timestamps, result or a bounded sanitized error, deliveryId? — *what was attempted*,
+  as opposed to what was authorized.
+- **InvoiceDelivery**: invoiceId, executionId?, providerKey (unique), recipient, status
+  (`queued|delivered|failed|unknown`), providerMessageId?, attempts — durable business history for
+  the one effect this system cannot roll back.
+- **OutboxMessage**: type, payload, deliveryId, providerKey (unique), status, attemptCount,
+  availableAt, leaseOwner/leaseExpiresAt — transport work, committed with the business change and
+  dispatched afterwards.
+
+`PendingAction` gains `commandHash`, `expectedResourceRevision` and `resolutionReason`;
+`IdempotencyRecord` gains `requestHash`, `completedAt` and `expiresAt`; `Invoice` gains `revision`.
+
+**The three facts, and why they are three.** *Decision* is about a person: somebody authorized this
+exact command. *Execution* is about an attempt: it was tried, and it ended some way. *External
+effect* is about somebody else's system: the provider took it, refused it, or did not say. They
+diverge exactly when it matters — a crash, a timeout, an approved write the API then refuses — so
+they are separate rows, linked by id, and no status is ever read as a proxy for another.
+
+`ActionExecutionStatus.Unknown` is the state that earns the model its keep. It means the request
+crossed a boundary that cannot be rolled back and the answer was lost. It is reachable, it is not
+terminal, and it must never be rendered or audited as `Failed`: "nothing happened" is the expensive
+direction to be wrong in about somebody's invoice.
+
 An allowed **read** produces no `AuditEvent`. That is deliberate: it keeps `auto` meaning exactly
 "a change happened and nobody approved it", which is the thing `evals/cases/injection-03.yaml`
 asserts the absence of. A read the gate *refuses* is audited — see ADR 007.
@@ -145,11 +173,35 @@ A domain rule violation is a `409` whose body carries a machine-readable `code`
 model verbatim, so these errors are written to be relayed as-is.
 
 - `POST /api/actions/{id}/approve` · `POST /api/actions/{id}/reject` · `GET /api/actions/{id}`
+- `GET /api/action-executions/{id}` — status, attempts, safe error and delivery state; visibility
+  follows the proposal's
 
-Writes accept an `Idempotency-Key` header, and the assistant always sends one: a tool call can be
-retried by the model, by the HTTP stack, or by a user clicking approve twice, and "send the invoice"
-is not something to do twice because a socket hiccuped. The same key on a *different* operation is a
-`409 idempotency_key_reused` rather than a silent replay of the other operation's response.
+**Every invoice write requires an `Idempotency-Key`** from F5 on, and the key an assistant write
+sends is its execution's own id. The filter owns the transaction the handler runs in, so the
+business change and the receipt that replays it commit together or not at all:
+
+| Condition | Response |
+|---|---|
+| No key | `400 idempotency_key_required` — the handler never runs |
+| New key | The handler's settled result; effect and receipt commit together |
+| Same key, same fingerprint | The stored status and body, replayed |
+| Same key, different fingerprint | `422 idempotency_key_payload_mismatch` |
+| A twin still running | Waits on the row, then replays; `409 request_in_progress` past a bounded lock timeout |
+| 5xx or an exception | Rolled back entirely; the key is free and the retry is a first attempt |
+
+The fingerprint is `SHA256(method, normalized path and query, body, If-Match)`, scoped by user.
+Credentials are never part of it and never stored. Receipts expire after 30 days by **deletion** —
+the previous design ignored old rows on read while the unique index kept reserving them, so a key
+could be simultaneously too old to replay and already taken.
+
+`POST /api/invoices/{number}/send` answers **202** with a delivery record rather than 200. The
+ledger change is done; the email is not, and the status code says which. No handler under the
+idempotency filter may call an external service — external work is an outbox row.
+
+Invoice responses carry `revision` and an `ETag`. Approved assistant writes send the revision they
+were proposed against as `If-Match`, and a mismatch is `412 resource_changed`: an invoice somebody
+edited during the five-minute approval window is a different invoice, and the server fails closed
+rather than executing against state the approver never saw.
 
 ## Anatomy of a chat turn
 
@@ -184,6 +236,35 @@ The SSE events are `conversation` (with the trace id), `activity` (a tool starti
 `token`, `approval_required`, `blocked`, `done` and `error`. Once the response has started there is
 no status code left to fail with, so a failure mid-turn arrives as an `error` event rather than an
 HTTP error. `blocked` is separate from `error` because nothing went wrong: the system did its job.
+
+## Durability: what survives a crash, and what does not
+
+The write gate answers "may this happen?". F5 answers "did it?", which is a different question and
+needs different machinery (ADR 009).
+
+| Boundary | The guarantee | The limit |
+|---|---|---|
+| Authorization | One durable resolution wins per `PendingAction`, decided by a conditional `UPDATE` | A later request is a new decision unless it resumes the same execution |
+| Local effect | The business change and its replay receipt commit or roll back together | Only for requests carrying a key through the F5 write pipeline |
+| HTTP retry | Same user, key and fingerprint returns the stored answer without executing | A different fingerprint is refused, never treated as a retry |
+| Approval freshness | Approved arguments execute only against the captured revision | A changed invoice needs a fresh proposal |
+| Outbox delivery | Committed work is retried until settled or classified | **At-least-once dispatch**, not exactly-once |
+| Provider effect | Effectively-once *when the provider honours a stable key or exposes receipt lookup* | With neither, an ambiguous result stays `Unknown` and is not retried |
+
+The last row is the one to read carefully. Nothing in this repository claims exactly-once delivery,
+and nothing may claim it without naming the provider capability that makes it so. `send_invoice`
+gets it because the demo provider deduplicates on the stable key; a provider that did neither would
+leave deliveries `Unknown` for a person to resolve, which is the honest outcome rather than a gap.
+
+The turn's own flow gains one step before anything is sent: **no assistant write goes out before its
+decision and its execution identity are durably stored.** That includes a policy-allowed write, so
+"what did the assistant attempt today" is one query rather than an inference from audit rows.
+
+Six named fault checkpoints make all of this testable — after the approval claim, before and after
+the business commit, after the outbox claim, after the provider accepts, and after its receipt is in
+hand. In a running deployment the injector is a no-op that is not configurable, not a tool and not
+an endpoint; the tests replace it and throw. Races here are proved by stopping the process at a
+named boundary, never by sleeping.
 
 ## Two ceilings, layered
 
@@ -266,6 +347,13 @@ IPs, which is the difference that makes a public demo safe to leave running.
 Everyone sees their own conversations; an Admin sees everyone's. The budget figures stay global on
 every view, because a per-user slice of one shared wallet would misstate how close the demo is to
 pausing. A conversation belonging to someone else answers `404`, the same as one that never existed.
+
+Durable actions add four spans — `assistant.action.resolve`, `assistant.action.execute`,
+`assistant.outbox.dispatch` and `assistant.action.reconcile` — and the counters that go with them:
+executions started and settled by tool, decision and status; idempotency replays, fingerprint
+mismatches and concurrent conflicts; outbox queue depth, the age of the oldest waiting row, and
+unconfirmed deliveries. The last three are the numbers to watch before pointing the external path at
+anything real: queue depth alone says nothing, because a deep queue draining fast is healthy.
 
 Traces: one trace per request, carrying `assistant.turn`, one `assistant.tool_call` per tool
 (tagged with the gate's decision — `allowed`, `pending_approval`, `denied` or `blocked`) and one

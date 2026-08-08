@@ -200,10 +200,7 @@ public sealed class ActionExecutor(
         await db.SaveChangesAsync(cancellationToken);
 
         activity?.SetTag("assistant.execution_status", execution.Status.ToString());
-        AssistantTelemetry.ExecutionsSettled.Add(
-            1,
-            new KeyValuePair<string, object?>("tool", execution.ToolName),
-            new KeyValuePair<string, object?>("status", execution.Status.ToString()));
+        AssistantTelemetry.RecordSettled(execution);
 
         return new ExecutionAttempt(execution, payload);
     }

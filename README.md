@@ -158,6 +158,34 @@ somewhere — a console exporter, or any OTLP collector — plus what the spans 
 - **F4 · Cost, traces and polish** ✅ — UsageCollector metering every model call, global daily spend
   kill switch, Usage page with per-conversation cost timelines, OpenTelemetry traces and metrics,
   single-container Docker build.
+- **F5 · Durable agent actions** ✅ — decision, execution and delivery as three linked records;
+  approve/reject settled by a database compare-and-set; the business change and its replay receipt
+  in one transaction; approvals bound to the invoice revision they were proposed against; an outbox
+  and a reconciler for the one effect that cannot be rolled back. [ADR 009](docs/adr/009-durable-agent-actions.md).
+
+## The five-minute failure demo
+
+The gate is easy to show working. What F5 adds is what happens when something breaks halfway, and
+that is worth five minutes of anyone's time. Everything below runs against `docker compose up` with
+no provider key except step 1, which needs the assistant.
+
+1. **Ask for a send that policy gates.** "Send invoice 2026-0007." The card shows the server's
+   summary and the invoice revision it was proposed against.
+2. **Approve it, with the demo provider set to accept and lose the answer.** The card does not say
+   *Done*. It says **Approved · executing**, then **Outcome unknown · reconciling**, with the
+   execution id underneath.
+3. **Look at the evidence.** The invoice reads `Sent`; its delivery reads `unknown`; the provider has
+   exactly one receipt. All three are true at once, which is precisely why they are three records.
+4. **Wait for the reconciler.** The same execution becomes `succeeded` and the delivery
+   `delivered` — from the provider's existing receipt. No second email.
+5. **Approve again.** The stored outcome is replayed: no second invoice transition, no second
+   delivery, the same execution id.
+6. **Optionally, change a different draft after proposing something against it**, then approve. The
+   write is refused with `resource_changed` and the card says the invoice moved on — because an
+   approval is a decision about a situation, not about a sentence.
+
+What the demo is designed to make obvious is that "approved" and "done" are different words, and
+that a system which cannot tell you which one it means is a system guessing about your money.
 
 Roles are visible in the chat from F2 on. A Viewer's write is refused outright by policy; an
 Accountant settles small invoices without being asked, is asked to confirm larger ones, and is

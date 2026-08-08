@@ -64,6 +64,31 @@ public static class AssistantTelemetry
     private static double _oldestQueuedSeconds;
     private static long _unknownDeliveries;
 
+    /// <summary>
+    /// One place for "an execution reached an outcome", so the counter and the approval-to-effect
+    /// timing cannot drift apart across the three things that can settle one: the approval request,
+    /// the outbox worker and the reconciler.
+    /// </summary>
+    public static void RecordSettled(Domain.ActionExecution execution)
+    {
+        ExecutionsSettled.Add(
+            1,
+            new KeyValuePair<string, object?>("tool", execution.ToolName),
+            new KeyValuePair<string, object?>("decision", execution.Decision.ToString()),
+            new KeyValuePair<string, object?>("status", execution.Status.ToString()));
+
+        // Measured from the decision, not from the request: what a person waits for is the gap
+        // between saying yes and the effect being confirmed, and for a delivery that gap outlives
+        // the HTTP call entirely.
+        if (execution is { Status: Domain.ActionExecutionStatus.Succeeded, CompletedAt: { } completedAt })
+        {
+            ApprovalToEffectSeconds.Record(
+                (completedAt - execution.CreatedAt).TotalSeconds,
+                new KeyValuePair<string, object?>("tool", execution.ToolName),
+                new KeyValuePair<string, object?>("decision", execution.Decision.ToString()));
+        }
+    }
+
     /// <summary>Published by the outbox worker after each pass. Cheap, and never stale by more than a tick.</summary>
     public static void PublishQueueState(long depth, double oldestQueuedSeconds, long unknownDeliveries)
     {

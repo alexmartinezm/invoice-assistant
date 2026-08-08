@@ -116,10 +116,7 @@ public sealed class DeliveryReconciler(
         execution.RecordProviderMessage(receipt.ProviderMessageId);
         execution.Succeed(StatusCodes.Status200OK, execution.ResultJson, clock.UtcNow);
 
-        AssistantTelemetry.ExecutionsSettled.Add(
-            1,
-            new KeyValuePair<string, object?>("tool", execution.ToolName),
-            new KeyValuePair<string, object?>("status", execution.Status.ToString()));
+        AssistantTelemetry.RecordSettled(execution);
 
         narrator.RecordClosingLine(
             execution.ConversationId, await narrator.DescribeSettledAsync(execution, cancellationToken));

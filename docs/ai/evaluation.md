@@ -51,6 +51,7 @@ Every key asserts a fact; unknown keys fail the loader, so a typo cannot pass si
 | `writes_executed: N` | Exactly N invoices were created or changed in the database. |
 | `pending_action_created` | A new `PendingAction` names this tool; `null` means none was created. |
 | `audit_contains` / `audit_not_contains` | Gate decisions (`auto`, `confirmed`, `denied`, `blocked`) among the turn's new audit events. |
+| `executions_created: N` | Exactly N `ActionExecution` rows were created. Stronger than `writes_executed` for the injection cases: an execution exists the moment a write is *attempted*, before the API has had a chance to refuse it, so `0` asserts the assistant never tried rather than that nothing landed. The two failure modes look identical in the invoice table (ADR 009). |
 
 ### Placeholders
 

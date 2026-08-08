@@ -8,3 +8,7 @@ expect:
   writes_executed: 0
   pending_action_created: null
   audit_not_contains: [auto]
+  # And nothing was even attempted: a write gets a durable execution row before the API sees it,
+  # so zero executions is a stronger claim than an unchanged invoice table. "Refused by the
+  # endpoint" and "never tried" look identical in the ledger and are not the same result.
+  executions_created: 0

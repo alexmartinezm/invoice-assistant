@@ -11,6 +11,10 @@ Production-grade AI assistant embedded in a demo invoicing app. Public repo: por
 Invariants that must never be broken:
 
 - No write reaches the DB without an explicit policy `allow` or a human approval recorded in `AuditEvent`.
+- No assistant write is sent before its decision and its `ActionExecution` identity are durably stored, and approve/reject/expire are resolved by a database compare-and-set, never by an in-memory status check.
+- A local effect and the idempotency receipt that replays it commit in one transaction; no endpoint under that filter may call an external service.
+- `Unknown` means the effect may have happened. It is never rendered, audited or retried as though nothing did.
+- Nothing in this repository claims exactly-once delivery without naming the provider capability that makes it effective.
 - The assistant can never do more than the logged-in user: tools call our own REST API over HTTP with the user's bearer token.
 - Security rules live in `policies.json` and on the server, never in the prompt. The prompt is UX, the policy is security.
 - Invoice state transitions are enforced in the domain: `Draft → Sent → Paid`; `Draft|Sent → Cancelled`; `Overdue` is derived from dates, never persisted.
@@ -33,8 +37,8 @@ Invariants that must never be broken:
 
 - `src/Api/Domain/` — entities and their invariants. Invoice transitions and every monetary calculation live here, with no public setters for status or totals.
 - `src/Api/Features/` — business vertical slices: Invoices, Customers, Reports, Auth.
-- `src/Api/Assistant/` — ChatOrchestrator, Tools/, ChatEndpoints, ToolPolicyEngine, Usage/ (metering, the daily spend cap and the usage endpoints).
-- `src/Api/Infrastructure/` — EF Core, migrations, seed, telemetry, configuration.
+- `src/Api/Assistant/` — ChatOrchestrator, Tools/ (including ActionExecutor, which owns the attempt claim and its classification), ChatEndpoints, ToolPolicyEngine, Usage/ (metering, the daily spend cap and the usage endpoints).
+- `src/Api/Infrastructure/` — EF Core, migrations, seed, telemetry, configuration, the transactional idempotency filter and `Delivery/` (the outbox worker, the reconciler and the demo provider).
 - `src/Web/` — React SPA. Its design language is written down in `.claude/skills/ui-design/SKILL.md`: read it before changing anything visible, whatever client you are. The look is committed, not up for reinvention per session. `.claude/skills/hallmark/` is a vendored third-party design skill (MIT) whose gates are the check on that work — contrast, mobile widths, interaction states.
 - `tests/Api.Tests/` — domain unit tests plus integration tests booting the real app against a throwaway PostgreSQL database.
 - `prompts/system.md` — versioned system prompt; its hash is recorded per conversation.
@@ -76,6 +80,8 @@ Verifiable commands live in `.agent/commands.md`. Keep that file updated wheneve
 - Treat all model output as untrusted input: validate IDs and args against real data on the server.
 - All financial calculations happen in the API (`get_receivables_summary`, totals, VAT); never model arithmetic.
 - Writes are proposed, not executed: `PendingAction` + human confirmation, unless an explicit `allow` policy rule applies.
+- Decision, execution and external effect are three records, never one status. Read ADR 009 before touching approval, idempotency or delivery.
+- Prove a race by stopping the process at a named fault checkpoint, never with a sleep.
 - Keep provider/model/prices in configuration (`appsettings`, `.env`), never in code.
 - Changes to `prompts/system.md` must pass the evals suite; a prompt regression must break CI.
 - No real provider calls in the normal test suite: fake `IChatClient`. Real-model evals are a separate job with a limited budget.

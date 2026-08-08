@@ -294,7 +294,9 @@ public static class ActionEndpoints
         // Settled, or already in flight on another request: report it, do not race it.
         if (execution.IsSettled || execution.Status is ActionExecutionStatus.Executing)
         {
-            return Outcome(action, execution, Message(action, execution), StoredResult(execution), clock.UtcNow);
+            return await OutcomeAsync(
+                action, execution, ActionNarrator.Describe(action.Summary, execution),
+                StoredResult(execution), clock.UtcNow, db, cancellationToken);
         }
 
         var attempt = await executor.RunAsync(execution, call, action.ExpectedResourceRevision, cancellationToken);
@@ -308,7 +310,7 @@ public static class ActionEndpoints
                 "Approved action {ActionId} was refused by the API: {Code}", action.Id, settled.ErrorCode);
         }
 
-        var message = Message(action, settled);
+        var message = ActionNarrator.Describe(action.Summary, settled);
 
         // The transcript gets a line only once the outcome is known. An assistant message saying
         // "Done" while an execution is still unconfirmed would be exactly the kind of claim this
@@ -318,7 +320,7 @@ public static class ActionEndpoints
             await RecordClosingLineAsync(db, action, message, clock, cancellationToken);
         }
 
-        return Outcome(action, settled, message, attempt.Payload, clock.UtcNow);
+        return await OutcomeAsync(action, settled, message, attempt.Payload, clock.UtcNow, db, cancellationToken);
     }
 
     private static async Task<IResult> RejectAsync(
@@ -352,34 +354,14 @@ public static class ActionEndpoints
             action.Id, null, "rejected", null, action.Summary, message, null, null));
     }
 
-    /// <summary>
-    /// The sentence the user is shown, in the server's words. Five outcomes, five sentences: the
-    /// copy is the only place a person learns that "approved" and "done" are not the same thing.
-    /// </summary>
-    private static string Message(PendingAction action, ActionExecution execution) => execution switch
-    {
-        { Status: ActionExecutionStatus.Succeeded } => $"Done: {action.Summary.ToLowerFirst()}.",
-
-        // Its own sentence, because it is not a refusal and telling the user "the API said no" would
-        // send them looking for a permission problem. What happened is that the thing they were
-        // shown moved on, and the only honest answer is to ask again against what it is now.
-        { ErrorCode: "resource_changed" } =>
-            $"{action.Summary} — not done: the invoice changed after this was proposed, so the approval no "
-                + "longer matches what you were shown. Ask again to see the current state.",
-
-        { Status: ActionExecutionStatus.Failed } =>
-            $"{action.Summary} — approved, but the API refused it. Nothing changed.",
-        { Status: ActionExecutionStatus.Unknown } =>
-            $"{action.Summary} — approved. The outcome is not confirmed yet; it is being reconciled.",
-        _ => $"{action.Summary} — approved and running.",
-    };
-
-    private static IResult Outcome(
+    private static async Task<IResult> OutcomeAsync(
         PendingAction action,
         ActionExecution execution,
         string message,
         JsonElement? result,
-        DateTimeOffset now) =>
+        DateTimeOffset now,
+        AppDbContext db,
+        CancellationToken cancellationToken) =>
         Results.Json(
             new ActionOutcome(
                 action.Id,
@@ -388,7 +370,7 @@ public static class ActionEndpoints
                 execution.Status.ToString().ToLowerInvariant(),
                 action.Summary,
                 message,
-                DeliveryStatus: null,
+                await ActionExecutionEndpoints.DeliveryStatusAsync(execution, db, cancellationToken),
                 result),
             // 202 while the answer is still owed: a client that treats 200 as "finished" is right to.
             statusCode: execution.IsSettled ? StatusCodes.Status200OK : StatusCodes.Status202Accepted);

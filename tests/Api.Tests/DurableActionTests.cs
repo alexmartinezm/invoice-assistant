@@ -205,6 +205,41 @@ public class DurableActionTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(execution.Id, audit.ExecutionId);
     }
 
+    /// <summary>
+    /// The execution is readable as its own resource, because the approval response can no longer
+    /// be the last word — an execution can settle minutes after the click, and a card that showed
+    /// one answer and stopped would be showing a guess.
+    /// </summary>
+    [Fact]
+    public async Task An_execution_can_be_read_back_by_whoever_could_resolve_the_action()
+    {
+        var number = await CreateAndSendAsync(unitPrice: 500m);
+        var actionId = await ProposeAsync(number);
+
+        using var accountant = await factory.ClientForAsync("carlos@demo");
+        using var approved = await accountant.PostAsync($"/api/actions/{actionId}/approve", content: null);
+        var executionId = (await approved.Content.ReadFromJsonAsync<OutcomePayload>())!.ExecutionId;
+
+        var view = await accountant.GetFromJsonAsync<ExecutionPayload>($"/api/action-executions/{executionId}");
+        Assert.Equal("succeeded", view!.Status);
+        Assert.Equal("confirmed", view.Decision);
+        Assert.Equal(actionId, view.ActionId);
+        Assert.Equal(1, view.Attempts);
+
+        // The action carries a compact view of it too, so one fetch answers "what happened".
+        var action = await accountant.GetFromJsonAsync<ActionPayload>($"/api/actions/{actionId}");
+        Assert.Equal(executionId, action!.Execution!.ExecutionId);
+
+        // An Admin can see it, because an Admin could have resolved it.
+        using var admin = await factory.ClientForAsync("ana@demo");
+        (await admin.GetAsync($"/api/action-executions/{executionId}")).EnsureSuccessStatusCode();
+
+        // A Viewer gets the same answer as for one that never existed.
+        using var viewer = await factory.ClientForAsync("lucia@demo");
+        using var hidden = await viewer.GetAsync($"/api/action-executions/{executionId}");
+        Assert.Equal(HttpStatusCode.NotFound, hidden.StatusCode);
+    }
+
     /// <summary>An expired proposal records why it closed, so a queue that dropped it can say so.</summary>
     [Fact]
     public async Task An_expired_action_records_its_reason_and_executes_nothing()
@@ -379,6 +414,18 @@ public class DurableActionTests(ApiFactory factory) : IClassFixture<ApiFactory>
         string? ExecutionStatus,
         string Summary,
         string Message);
+
+    private sealed record ExecutionPayload(
+        Guid ExecutionId,
+        Guid? ActionId,
+        string Tool,
+        string Decision,
+        string Status,
+        int Attempts,
+        string? ErrorCode,
+        string? DeliveryStatus);
+
+    private sealed record ActionPayload(Guid ActionId, string Status, ExecutionPayload? Execution);
 
     private sealed record ProblemPayload(string? Code, string? Detail);
 }

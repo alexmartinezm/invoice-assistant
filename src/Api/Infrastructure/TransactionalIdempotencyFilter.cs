@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Api.Assistant;
 using Api.Domain;
 using Api.Features.Auth;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -217,6 +218,7 @@ public sealed class TransactionalIdempotencyFilter(
             // Same key, different content: the caller has a bug, and replaying the other request's
             // response would hide it behind a plausible-looking success.
             logger.LogWarning("Idempotency key {Key} was reused with different content.", key);
+            Count("mismatched");
 
             return Problem(
                 "Idempotency key reused",
@@ -229,6 +231,8 @@ public sealed class TransactionalIdempotencyFilter(
         {
             return InProgress(key);
         }
+
+        Count("replayed");
 
         using var document = JsonDocument.Parse(existing.ResponseJson ?? "null");
         return Results.Json(document.RootElement.Clone(), statusCode: existing.StatusCode);
@@ -313,11 +317,23 @@ public sealed class TransactionalIdempotencyFilter(
         return buffer.Length > MaxBodyBytes ? buffer.GetBuffer()[..MaxBodyBytes] : buffer.ToArray();
     }
 
-    private static IResult InProgress(string key) => Problem(
+    private static IResult InProgress(string key)
+    {
+        Count("in_progress");
+
+        return Problem(
         "Request already in progress",
-        $"Another request with key '{key}' is still running. Retry in a moment; it will replay that request's answer.",
-        StatusCodes.Status409Conflict,
-        "request_in_progress");
+            $"Another request with key '{key}' is still running. Retry in a moment; it will replay that request's answer.",
+            StatusCodes.Status409Conflict,
+            "request_in_progress");
+    }
+
+    /// <summary>
+    /// Counts the outcomes worth watching. A rising <c>mismatched</c> is a client generating one key
+    /// for two requests; a rising <c>in_progress</c> is handlers that have stopped being short.
+    /// </summary>
+    private static void Count(string outcome) =>
+        AssistantTelemetry.IdempotencyOutcomes.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
 
     private static IResult Problem(string title, string detail, int statusCode, string code) => Results.Problem(
         title: title,

@@ -1,4 +1,5 @@
 import type {
+  ActionExecutionView,
   ActionOutcome,
   AppConfig,
   AssistantTool,
@@ -102,6 +103,16 @@ export const api = {
     request<ActionOutcome>(`/api/actions/${encodeURIComponent(actionId)}/${decision}`, token, {
       method: 'POST',
     }),
+
+  /**
+   * Where an approved write has got to. Polled while the outcome is still owed: approving is no
+   * longer the end of the story, because a write that hands off to a delivery settles later.
+   */
+  actionExecution: (token: string, executionId: string) =>
+    request<ActionExecutionView>(
+      `/api/action-executions/${encodeURIComponent(executionId)}`,
+      token,
+    ),
 
   /**
    * Proposals still waiting on this user — their own, plus anything escalated to them. An Admin has

@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
+import type { ExecutionStatus } from '../api/types';
 
 export type ApprovalState =
   | { status: 'pending' }
   | { status: 'working'; decision: 'approve' | 'reject' }
+  /** Approved, and the outcome is still being established. The card keeps watching. */
+  | { status: 'running'; executionId: string; execution: ExecutionStatus; message: string }
   | { status: 'resolved'; message: string; failed: boolean };
 
 export interface PendingApproval {
@@ -43,6 +46,10 @@ export function ApprovalCard({
 
   if (approval.state.status === 'resolved') {
     return <ResolvedNote message={approval.state.message} failed={approval.state.failed} />;
+  }
+
+  if (approval.state.status === 'running') {
+    return <ExecutionNote state={approval.state} />;
   }
 
   const inFlight = approval.state.status === 'working' ? approval.state.decision : null;
@@ -104,6 +111,47 @@ export function ApprovalCard({
           <p className="text-ink-faint w-full text-xs">Ask again to propose it afresh.</p>
         )}
       </div>
+    </section>
+  );
+}
+
+/**
+ * Approved, and not yet finished.
+ *
+ * This is the state the card never used to have: it went from "Approve" straight to "Done", which
+ * was a claim the server was in no position to make about a delivery nobody had confirmed. The
+ * heading says which of the two unfinished things is happening, because "still going" and "we do
+ * not know" are different news.
+ */
+function ExecutionNote({ state }: { state: Extract<ApprovalState, { status: 'running' }> }) {
+  const unknown = state.execution === 'unknown';
+
+  return (
+    <section
+      aria-label="Approved, awaiting the outcome"
+      aria-busy="true"
+      className="border-rule bg-raised overflow-hidden rounded-lg border"
+      role="status"
+    >
+      <header className="border-rule bg-sunken text-ink-soft flex items-center gap-2 border-b px-3 py-2">
+        {/* Neutral while running, exactly like a tool chip: work in flight is not a warning, and the
+            aging ramp means one thing in this app. The two unfinished states are told apart by the
+            heading rather than by the dot, because animation alone disappears under
+            prefers-reduced-motion. */}
+        <span
+          aria-hidden="true"
+          className={`h-1.5 w-1.5 rounded-full ${unknown ? 'bg-ink-soft' : 'bg-ink-faint animate-pulse'}`}
+        />
+        <h3 className="flex-1 text-xs font-semibold tracking-wide uppercase">
+          {unknown ? 'Outcome unknown · reconciling' : 'Approved · executing'}
+        </h3>
+      </header>
+
+      <p className="px-3 py-3 text-sm leading-relaxed break-words">{state.message}</p>
+
+      <p className="text-ink-faint numeric px-3 pb-3 text-[11px] break-all">
+        execution {state.executionId}
+      </p>
     </section>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, streamChatTurn } from '../api/client';
 import type { PendingApproval } from './ApprovalCard';
+import { useActionOutcome } from './useActionOutcome';
 
 export interface ToolRun {
   tool: string;
@@ -32,6 +33,7 @@ export type ChatItem =
  */
 export function useChatStream(token: string) {
   const [items, setItems] = useState<ChatItem[]>([]);
+  const outcomes = useActionOutcome(token);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [traceId, setTraceId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -185,14 +187,11 @@ export function useChatStream(token: string) {
       try {
         const outcome = await api.resolveAction(token, actionId, decision);
 
-        updateApproval(actionId, (approval) => ({
-          ...approval,
-          state: {
-            status: 'resolved',
-            message: outcome.message,
-            failed: outcome.executionStatus === 'failed',
-          },
-        }));
+        // The first answer, and then however many it takes: an approved write that handed off to a
+        // delivery is not finished, and the card says so rather than claiming it is.
+        outcomes.track(actionId, outcome, (state) =>
+          updateApproval(actionId, (approval) => ({ ...approval, state })),
+        );
       } catch (cause) {
         updateApproval(actionId, (approval) => ({
           ...approval,
@@ -204,16 +203,17 @@ export function useChatStream(token: string) {
         }));
       }
     },
-    [token, updateApproval],
+    [outcomes, token, updateApproval],
   );
 
   const reset = useCallback(() => {
     abort.current?.abort();
+    outcomes.stopAll();
     setItems([]);
     setConversationId(null);
     setTraceId(null);
     setStreaming(false);
-  }, []);
+  }, [outcomes]);
 
   /** Action ids already on screen as cards, so the pending queue does not show them twice. */
   const transcriptActionIds = useMemo(

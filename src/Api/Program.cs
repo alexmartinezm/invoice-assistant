@@ -132,6 +132,7 @@ app.MapConfigEndpoints()
     .MapReportEndpoints()
     .MapChatEndpoints()
     .MapActionEndpoints()
+    .MapActionExecutionEndpoints()
     .MapUsageEndpoints();
 
 // Production single-container layout: the built SPA lands in wwwroot and the API serves it.
