@@ -26,7 +26,7 @@ Added by cost accounting (F4):
   costEur, latencyMs, createdAt — one row per **model call**, not per turn, because a turn that uses
   tools makes several (ADR 008).
 
-Added by durable actions (F5), which splits one status into three facts (ADR 009):
+Added by durable actions, which split one status into three facts (ADR 009):
 
 - **ActionExecution**: id (UUIDv7, and the `Idempotency-Key` every attempt of it sends),
   pendingActionId? (unique when present), userId, conversationId?, toolName, decision
@@ -176,7 +176,7 @@ model verbatim, so these errors are written to be relayed as-is.
 - `GET /api/action-executions/{id}` — status, attempts, safe error and delivery state; visibility
   follows the proposal's
 
-**Every invoice write requires an `Idempotency-Key`** from F5 on, and the key an assistant write
+**Every invoice write requires an `Idempotency-Key`**, and the key an assistant write
 sends is its execution's own id. The filter owns the transaction the handler runs in, so the
 business change and the receipt that replays it commit together or not at all:
 
@@ -239,13 +239,13 @@ HTTP error. `blocked` is separate from `error` because nothing went wrong: the s
 
 ## Durability: what survives a crash, and what does not
 
-The write gate answers "may this happen?". F5 answers "did it?", which is a different question and
-needs different machinery (ADR 009).
+The write gate answers "may this happen?". Durable actions answer "did it?", which is a different
+question and needs different machinery (ADR 009).
 
 | Boundary | The guarantee | The limit |
 |---|---|---|
 | Authorization | One durable resolution wins per `PendingAction`, decided by a conditional `UPDATE` | A later request is a new decision unless it resumes the same execution |
-| Local effect | The business change and its replay receipt commit or roll back together | Only for requests carrying a key through the F5 write pipeline |
+| Local effect | The business change and its replay receipt commit or roll back together | Only for requests carrying a key through the transactional write pipeline |
 | HTTP retry | Same user, key and fingerprint returns the stored answer without executing | A different fingerprint is refused, never treated as a retry |
 | Approval freshness | Approved arguments execute only against the captured revision | A changed invoice needs a fresh proposal |
 | Outbox delivery | Committed work is retried until settled or classified | **At-least-once dispatch**, not exactly-once |

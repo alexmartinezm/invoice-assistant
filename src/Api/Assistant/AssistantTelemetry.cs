@@ -28,7 +28,7 @@ public static class AssistantTelemetry
     public static readonly Counter<long> UnpricedModelCalls = Meter.CreateCounter<long>(
         "assistant.unpriced_model_calls", description: "Calls recorded at zero cost because the model has no configured price");
 
-    // --- Durable actions (F5) -------------------------------------------------------------------
+    // --- Durable actions --------------------------------------------------------------------------
     // Started and settled are counted separately rather than as one gauge, because the number worth
     // alerting on is the gap between them: executions that began and never reached a terminal state.
 

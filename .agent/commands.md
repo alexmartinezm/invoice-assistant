@@ -48,7 +48,7 @@ dotnet test --filter FullyQualifiedName~UsageAccountingTests    # metering and t
 dotnet test --filter FullyQualifiedName~DailyBudgetTests        # the spend kill switch
 ```
 
-The durability suites (F5) are the ones that take a moment, because they run real concurrent
+The durability suites are the ones that take a moment, because they run real concurrent
 requests and stop the process at named fault checkpoints rather than sleeping:
 
 ```bash

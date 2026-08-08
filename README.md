@@ -158,14 +158,15 @@ somewhere — a console exporter, or any OTLP collector — plus what the spans 
 - **F4 · Cost, traces and polish** ✅ — UsageCollector metering every model call, global daily spend
   kill switch, Usage page with per-conversation cost timelines, OpenTelemetry traces and metrics,
   single-container Docker build.
-- **F5 · Durable agent actions** ✅ — decision, execution and delivery as three linked records;
+- **Durable agent actions** ✅ — decision, execution and delivery as three linked records;
   approve/reject settled by a database compare-and-set; the business change and its replay receipt
   in one transaction; approvals bound to the invoice revision they were proposed against; an outbox
   and a reconciler for the one effect that cannot be rolled back. [ADR 009](docs/adr/009-durable-agent-actions.md).
 
 ## The five-minute failure demo
 
-The gate is easy to show working. What F5 adds is what happens when something breaks halfway, and
+The gate is easy to show working. What durable actions add is what happens when something breaks
+halfway, and
 that is worth five minutes of anyone's time. Everything below runs against `docker compose up` with
 no provider key except step 1, which needs the assistant.
 

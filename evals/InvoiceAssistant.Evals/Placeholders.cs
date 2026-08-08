@@ -172,7 +172,7 @@ public sealed partial class Placeholders(EvalHost host)
 }
 
 /// <summary>
-/// Fixture writes, carrying the <c>Idempotency-Key</c> the API requires from F5 on. One fresh key
+/// Fixture writes, carrying the <c>Idempotency-Key</c> every invoice write requires. One fresh key
 /// per call: these are setup steps, not retries.
 /// </summary>
 internal static class FixtureWrites

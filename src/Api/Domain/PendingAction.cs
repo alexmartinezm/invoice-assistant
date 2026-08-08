@@ -5,7 +5,7 @@ namespace Api.Domain;
 /// </summary>
 /// <remarks>
 /// <see cref="Approved"/> records that somebody said yes, and nothing more. Whether the work then
-/// happened lives in <see cref="ActionExecution"/>: collapsing the two was the bug F5 exists to fix,
+/// happened lives in <see cref="ActionExecution"/>: collapsing the two was the bug ADR 009 fixes,
 /// so this enum must never grow an execution outcome.
 /// </remarks>
 public enum PendingActionStatus

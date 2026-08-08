@@ -66,7 +66,7 @@ public sealed class TransactionalIdempotencyFilter(
         if (!http.Request.Headers.TryGetValue("Idempotency-Key", out var header)
             || header.ToString() is not { Length: > 0 } key)
         {
-            // Required rather than opt-in from F5 on. A write with no key cannot be retried safely,
+            // Required rather than opt-in. A write with no key cannot be retried safely,
             // and "the caller forgot" is not a reason to let a payment happen twice.
             return Problem(
                 "Idempotency-Key required",
