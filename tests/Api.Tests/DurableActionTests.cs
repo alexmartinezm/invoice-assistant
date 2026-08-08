@@ -231,7 +231,7 @@ public class DurableActionTests(ApiFactory factory) : IClassFixture<ApiFactory>
     {
         using var client = await factory.ClientForAsync("carlos@demo");
 
-        var created = await client.PostAsJsonAsync("/api/invoices", new
+        var created = await client.PostWriteAsync("/api/invoices", new
         {
             customerName = "Delta Logística",
             lines = new[] { new { description = "Durable action test", quantity = 1, unitPrice } },
@@ -239,7 +239,7 @@ public class DurableActionTests(ApiFactory factory) : IClassFixture<ApiFactory>
         created.EnsureSuccessStatusCode();
 
         var invoice = await created.Content.ReadFromJsonAsync<InvoiceDetail>();
-        (await client.PostAsync($"/api/invoices/{invoice!.Number}/send", content: null)).EnsureSuccessStatusCode();
+        (await client.PostWriteAsync($"/api/invoices/{invoice!.Number}/send")).EnsureSuccessStatusCode();
 
         return invoice.Number;
     }

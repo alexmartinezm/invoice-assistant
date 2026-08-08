@@ -86,6 +86,13 @@ builder.Services.AddRateLimiter(limiter =>
     });
 });
 
+// --- Durability -------------------------------------------------------------------------------
+// The seam tests use to stop the process at a named boundary. In a running deployment it is this
+// no-op and nothing else: it is not configurable, not a tool and not an endpoint.
+builder.Services.AddSingleton<IFaultInjector, NoFaults>();
+builder.Services.AddScoped<TransactionalIdempotencyFilter>();
+builder.Services.AddHostedService<IdempotencyCleanupService>();
+
 // --- Cross-cutting ----------------------------------------------------------------------------
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<DomainExceptionHandler>();
@@ -96,6 +103,10 @@ var app = builder.Build();
 await app.MigrateAndSeedAsync();
 
 app.UseExceptionHandler();
+
+// Before routing, because an endpoint filter runs after model binding has already read the body,
+// and the idempotency fingerprint is computed from those bytes.
+app.UseIdempotencyBodyBuffering();
 
 // No CORS configuration anywhere: the Vite dev server proxies /api, and in production the API
 // serves the built SPA itself. The browser only ever talks to one origin.

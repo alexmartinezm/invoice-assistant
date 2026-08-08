@@ -27,7 +27,7 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
     {
         using var client = await factory.ClientForAsync("lucia@demo");
 
-        var response = await client.PostAsJsonAsync("/api/invoices", new
+        var response = await client.PostWriteAsync("/api/invoices", new
         {
             customerName = "Acme",
             lines = new[] { new { description = "Development", quantity = 1, unitPrice = 100 } },
@@ -53,11 +53,11 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         using var accountant = await factory.ClientForAsync("carlos@demo");
 
         var small = await CreateAndSendAsync(accountant, unitPrice: 100m);
-        var settled = await accountant.PostAsync($"/api/invoices/{small}/mark-paid", content: null);
+        var settled = await accountant.PostWriteAsync($"/api/invoices/{small}/mark-paid");
         Assert.Equal(HttpStatusCode.OK, settled.StatusCode);
 
         var large = await CreateAndSendAsync(accountant, unitPrice: 5_000m);
-        var refused = await accountant.PostAsync($"/api/invoices/{large}/mark-paid", content: null);
+        var refused = await accountant.PostWriteAsync($"/api/invoices/{large}/mark-paid");
 
         Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
         var problem = await refused.Content.ReadFromJsonAsync<ProblemPayload>();
@@ -71,10 +71,10 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         using var admin = await factory.ClientForAsync("ana@demo");
         var number = await CreateAndSendAsync(accountant, unitPrice: 200m);
 
-        var refused = await accountant.PostAsync($"/api/invoices/{number}/cancel", content: null);
+        var refused = await accountant.PostWriteAsync($"/api/invoices/{number}/cancel");
         Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
 
-        var accepted = await admin.PostAsync($"/api/invoices/{number}/cancel", content: null);
+        var accepted = await admin.PostWriteAsync($"/api/invoices/{number}/cancel");
         Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
 
         var cancelled = await accepted.Content.ReadFromJsonAsync<InvoiceDetail>();
@@ -88,7 +88,7 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var drafts = await admin.GetFromJsonAsync<InvoiceList>("/api/invoices?status=Draft");
         var draft = drafts!.Invoices[0];
 
-        var response = await admin.PostAsync($"/api/invoices/{draft.Number}/mark-paid", content: null);
+        var response = await admin.PostWriteAsync($"/api/invoices/{draft.Number}/mark-paid");
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         var problem = await response.Content.ReadFromJsonAsync<ProblemPayload>();
@@ -197,7 +197,7 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
     {
         using var accountant = await factory.ClientForAsync("carlos@demo");
 
-        var response = await accountant.PostAsJsonAsync("/api/invoices", new
+        var response = await accountant.PostWriteAsync("/api/invoices", new
         {
             customerName = "Tarraco Software",
             lines = new[]
@@ -222,7 +222,7 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
     {
         using var accountant = await factory.ClientForAsync("carlos@demo");
 
-        var response = await accountant.PostAsJsonAsync("/api/invoices", new
+        var response = await accountant.PostWriteAsync("/api/invoices", new
         {
             customerName = "S",
             lines = new[] { new { description = "Development", quantity = 1, unitPrice = 100 } },
@@ -239,7 +239,7 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
     /// </summary>
     private static async Task<string> CreateAndSendAsync(HttpClient client, decimal unitPrice)
     {
-        var created = await client.PostAsJsonAsync("/api/invoices", new
+        var created = await client.PostWriteAsync("/api/invoices", new
         {
             customerName = "Delta Logística",
             lines = new[] { new { description = "Development", quantity = 1, unitPrice } },
@@ -247,7 +247,7 @@ public class BusinessApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         created.EnsureSuccessStatusCode();
 
         var invoice = await created.Content.ReadFromJsonAsync<InvoiceDetail>();
-        var sent = await client.PostAsync($"/api/invoices/{invoice!.Number}/send", content: null);
+        var sent = await client.PostWriteAsync($"/api/invoices/{invoice!.Number}/send");
         sent.EnsureSuccessStatusCode();
 
         return invoice.Number;

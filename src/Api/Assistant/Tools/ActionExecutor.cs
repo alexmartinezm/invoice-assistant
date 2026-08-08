@@ -52,6 +52,14 @@ public sealed class ActionExecutor(
         activity?.SetTag("assistant.tool", execution.ToolName);
         activity?.SetTag("url.path", call.Url);
 
+        // An execution whose answer was lost may already have an answer sitting in the database.
+        // Asking costs one indexed read and is the difference between reconciling and re-sending.
+        if (await TryReconcileFromReceiptAsync(execution, cancellationToken))
+        {
+            activity?.SetTag("assistant.attempt", "reconciled_from_receipt");
+            return new ExecutionAttempt(execution, StoredPayload(execution));
+        }
+
         // Durable before the request goes out: a crash from here on is resumable, because the row
         // says an attempt was made and under which key.
         var claimed = await TryClaimAttemptAsync(execution.Id, cancellationToken);
@@ -99,6 +107,53 @@ public sealed class ActionExecutor(
         }
 
         return await SettleAsync(execution, response.Payload, activity, cancellationToken);
+    }
+
+    /// <summary>
+    /// Settles an execution whose answer was lost, from the receipt the business transaction wrote.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes <c>Unknown</c> a temporary state rather than a permanent shrug. Because
+    /// the receipt is committed in the same transaction as the effect, its presence proves the write
+    /// happened and its absence proves it did not — so a completed receipt is authoritative for a
+    /// local effect, and no second request is needed to find out.
+    /// </remarks>
+    public async Task<bool> TryReconcileFromReceiptAsync(ActionExecution execution, CancellationToken cancellationToken)
+    {
+        if (execution.Status is not ActionExecutionStatus.Unknown)
+        {
+            return false;
+        }
+
+        var key = execution.IdempotencyKey;
+        var receipt = await db.IdempotencyRecords.AsNoTracking().SingleOrDefaultAsync(
+            record => record.UserId == execution.UserId && record.Key == key && record.CompletedAt != null,
+            cancellationToken);
+
+        if (receipt is null)
+        {
+            return false;
+        }
+
+        logger.LogInformation(
+            "Execution {ExecutionId} reconciled from its idempotency receipt with {Status}.", execution.Id, receipt.StatusCode);
+
+        if (receipt.StatusCode is >= 200 and < 300)
+        {
+            execution.Succeed(receipt.StatusCode, receipt.ResponseJson, clock.UtcNow);
+        }
+        else
+        {
+            execution.Fail(receipt.StatusCode, "api_error", detail: null, clock.UtcNow);
+        }
+
+        if (db.Entry(execution).State is EntityState.Detached)
+        {
+            db.ActionExecutions.Attach(execution).State = EntityState.Modified;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     /// <summary>

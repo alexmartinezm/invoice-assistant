@@ -167,8 +167,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             // Unique per user, so a duplicate is refused by the database rather than by whichever
             // request happened to check first.
             record.HasIndex(r => new { r.UserId, r.Key }).IsUnique();
-            record.Property(r => r.Key).HasMaxLength(100);
+
+            // The cleanup service's query. Without it, purging scans the table every hour.
+            record.HasIndex(r => r.ExpiresAt);
+
+            record.Property(r => r.Key).HasMaxLength(TransactionalIdempotencyFilter.MaxKeyLength);
             record.Property(r => r.Operation).HasMaxLength(200);
+            record.Property(r => r.RequestHash).HasMaxLength(64).IsFixedLength();
             record.Property(r => r.ResponseJson).HasColumnType("jsonb");
         });
 

@@ -17,12 +17,13 @@ public static class InvoiceEndpoints
         group.MapGet("/", ListAsync);
         group.MapGet("/{number}", GetAsync);
 
-        // Writes accept an Idempotency-Key so a retry — by the assistant, by the HTTP stack, or by a
-        // user clicking approve twice — returns the first answer instead of doing the work again.
+        // Writes require an Idempotency-Key, and the filter owns the transaction they run in: the
+        // business change and the receipt that lets a retry replay it commit together or not at all.
+        // Nothing in this group may call an external service — see TransactionalIdempotencyFilter.
         var writes = routes.MapGroup("/api/invoices")
             .WithTags("Invoices")
             .RequireAuthorization()
-            .AddEndpointFilter<IdempotencyFilter>();
+            .AddEndpointFilter<TransactionalIdempotencyFilter>();
 
         writes.MapPost("/", CreateDraftAsync).RequireAuthorization(Policies.Accountant);
         writes.MapPost("/{number}/send", SendAsync).RequireAuthorization(Policies.Accountant);
