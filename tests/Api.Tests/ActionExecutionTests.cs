@@ -26,17 +26,15 @@ public class ActionExecutionTests
     }
 
     [Fact]
-    public void Starting_counts_the_attempt_and_keeps_the_first_start_time()
+    public void A_settled_execution_records_when_and_with_what()
     {
         var execution = Execution();
 
-        execution.Start(Now);
         execution.Succeed(200, """{"status":"ok"}""", Now.AddSeconds(1));
 
         Assert.Equal(ActionExecutionStatus.Succeeded, execution.Status);
-        Assert.Equal(1, execution.AttemptCount);
-        Assert.Equal(Now, execution.StartedAt);
         Assert.Equal(Now.AddSeconds(1), execution.CompletedAt);
+        Assert.Equal(200, execution.ResultStatusCode);
         Assert.True(execution.IsSettled);
     }
 
@@ -48,7 +46,6 @@ public class ActionExecutionTests
     public void A_lost_response_becomes_unknown_and_schedules_reconciliation()
     {
         var execution = Execution();
-        execution.Start(Now);
 
         execution.MarkUnknown("transport_lost", "The connection closed after the request went out.", Now.AddSeconds(30));
 
@@ -62,25 +59,23 @@ public class ActionExecutionTests
     public void An_unknown_execution_can_be_reconciled_to_succeeded_without_a_second_attempt()
     {
         var execution = Execution();
-        execution.Start(Now);
         execution.MarkUnknown("transport_lost", detail: null, Now.AddSeconds(30));
 
         execution.Succeed(200, """{"status":"ok"}""", Now.AddMinutes(1));
 
         Assert.Equal(ActionExecutionStatus.Succeeded, execution.Status);
-        Assert.Equal(1, execution.AttemptCount);
         Assert.Null(execution.NextAttemptAt);
+        Assert.Null(execution.ErrorCode);
     }
 
     [Fact]
     public void A_settled_execution_cannot_move_again()
     {
         var execution = Execution();
-        execution.Start(Now);
         execution.Fail(409, "invalid_transition", "Only a sent invoice can be marked as paid.", Now);
 
-        Assert.Throws<InvalidOperationException>(() => execution.Start(Now));
         Assert.Throws<InvalidOperationException>(() => execution.Succeed(200, null, Now));
+        Assert.Throws<InvalidOperationException>(() => execution.MarkUnknown("x", null, Now));
     }
 
     /// <summary>
@@ -92,7 +87,6 @@ public class ActionExecutionTests
     {
         var execution = Execution();
         var deliveryId = Guid.CreateVersion7();
-        execution.Start(Now);
 
         execution.AwaitDelivery(deliveryId, 202, """{"status":"Sent"}""", Now);
 
@@ -105,7 +99,6 @@ public class ActionExecutionTests
     public void A_failure_detail_is_bounded_rather_than_stored_whole()
     {
         var execution = Execution();
-        execution.Start(Now);
 
         execution.Fail(500, "api_error", new string('x', ActionExecution.MaxErrorDetail + 200), Now);
 

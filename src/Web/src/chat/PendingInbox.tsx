@@ -54,7 +54,7 @@ export function PendingInbox({
         [actionId]: {
           status: 'resolved',
           message: outcome.message,
-          failed: outcome.status === 'failed',
+          failed: outcome.executionStatus === 'failed',
         },
       }));
     } catch (cause) {

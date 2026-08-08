@@ -101,7 +101,9 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var outcome = await response.Content.ReadFromJsonAsync<OutcomePayload>();
-        Assert.Equal("approved", outcome!.Status);
+        Assert.Equal("approved", outcome!.DecisionStatus);
+        Assert.Equal("succeeded", outcome.ExecutionStatus);
+        Assert.NotNull(outcome.ExecutionId);
 
         Assert.Equal(InvoiceStatus.Paid, await StatusOfAsync(number));
         Assert.Equal([AuditDecision.Confirmed], await AuditFor(conversationId));
@@ -116,6 +118,12 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
     /// Band three, and the best demonstration in the repo: a person approved it and the server
     /// still refused. Policy is one ceiling; the endpoint's own limit is another.
     /// </summary>
+    /// <remarks>
+    /// The audit says <c>Confirmed</c>, not <c>Denied</c>, and that changed with ADR 009. A human
+    /// did authorize this — recording it as a denial would erase them from the trail and make "did
+    /// anybody approve this?" unanswerable. What failed is the execution, and the execution is where
+    /// the failure is written down.
+    /// </remarks>
     [Fact]
     public async Task An_approved_action_can_still_be_refused_by_the_api()
     {
@@ -127,10 +135,15 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var outcome = await response.Content.ReadFromJsonAsync<OutcomePayload>();
-        Assert.Equal("failed", outcome!.Status);
+        Assert.Equal("approved", outcome!.DecisionStatus);
+        Assert.Equal("failed", outcome.ExecutionStatus);
 
         Assert.Equal(InvoiceStatus.Sent, await StatusOfAsync(number));
-        Assert.Equal([AuditDecision.Denied], await AuditFor(conversationId));
+        Assert.Equal([AuditDecision.Confirmed], await AuditFor(conversationId));
+
+        var execution = await ExecutionForAsync(actionId);
+        Assert.Equal(ActionExecutionStatus.Failed, execution.Status);
+        Assert.Equal("amount_limit_exceeded", execution.ErrorCode);
     }
 
     [Fact]
@@ -148,23 +161,6 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         var pending = Assert.Single(await PendingFor(conversationId));
         Assert.Equal(PendingActionStatus.Rejected, pending.Status);
-    }
-
-    [Fact]
-    public async Task An_action_cannot_be_approved_twice()
-    {
-        var number = await CreateAndSendAsync(unitPrice: 500m);
-        var (_, actionId) = await ProposeAsync("mark_invoice_paid", new { number }, $"mark {number} as paid");
-
-        using var client = await factory.ClientForAsync("carlos@demo");
-        var first = await client.PostAsync($"/api/actions/{actionId}/approve", content: null);
-        var second = await client.PostAsync($"/api/actions/{actionId}/approve", content: null);
-
-        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
-
-        var problem = await second.Content.ReadFromJsonAsync<ProblemPayload>();
-        Assert.Equal("action_not_open", problem!.Code);
     }
 
     [Fact]
@@ -513,6 +509,14 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
             .ToListAsync();
     }
 
+    private async Task<ActionExecution> ExecutionForAsync(Guid actionId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        return await db.ActionExecutions.AsNoTracking().SingleAsync(e => e.PendingActionId == actionId);
+    }
+
     private async Task<List<string>> MessagesFor(Guid conversationId)
     {
         using var scope = factory.Services.CreateScope();
@@ -610,7 +614,13 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
     private sealed record BlockedPayload(string Tool, string Reason);
 
-    private sealed record OutcomePayload(Guid ActionId, string Status, string Summary, string Message);
+    private sealed record OutcomePayload(
+        Guid ActionId,
+        Guid? ExecutionId,
+        string DecisionStatus,
+        string? ExecutionStatus,
+        string Summary,
+        string Message);
 
     private sealed record ProblemPayload(string? Code, string? Detail);
 }

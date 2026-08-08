@@ -190,7 +190,7 @@ export function useChatStream(token: string) {
           state: {
             status: 'resolved',
             message: outcome.message,
-            failed: outcome.status === 'failed',
+            failed: outcome.executionStatus === 'failed',
           },
         }));
       } catch (cause) {

@@ -7,6 +7,20 @@ using System.Text.Json.Nodes;
 namespace Api.Assistant.Tools;
 
 /// <summary>
+/// One call to our own API, with the status code kept rather than folded into the payload.
+/// </summary>
+/// <remarks>
+/// The model is handed <see cref="Payload"/> and nothing else — a status code is not something to
+/// ask it to reason about. An <c>ActionExecution</c>, on the other hand, has to classify: 2xx is a
+/// settled effect, a deterministic 4xx proves the effect did not happen, and a 5xx cannot prove
+/// either way. That distinction needs the number.
+/// </remarks>
+public sealed record ApiResponse(int StatusCode, JsonElement Payload, string? Code)
+{
+    public bool IsSuccess => StatusCode is >= 200 and < 300;
+}
+
+/// <summary>
 /// The assistant's window onto the business API. Tools go over HTTP to our own REST API carrying
 /// the caller's bearer token (ADR 002), so the assistant is just another API client: endpoint
 /// authorization applies to it exactly as it applies to the browser, and the propagated identity
@@ -25,26 +39,26 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
     /// gets serialized into the conversation as a quoted, escape-laden blob, which costs tokens and
     /// buries the data one level deeper than the model expects.
     /// </remarks>
-    public Task<JsonElement> GetJsonAsync(string relativeUrl, CancellationToken cancellationToken) =>
-        SendAsync(HttpMethod.Get, relativeUrl, body: null, idempotencyKey: null, cancellationToken);
+    public async Task<JsonElement> GetJsonAsync(string relativeUrl, CancellationToken cancellationToken) =>
+        (await SendCoreAsync(HttpMethod.Get, relativeUrl, body: null, idempotencyKey: null, cancellationToken)).Payload;
 
     /// <summary>
-    /// Performs a write against our own API.
+    /// Performs a write against our own API and reports the status alongside the payload.
     /// </summary>
     /// <remarks>
-    /// The idempotency key is not optional in practice: a tool call can be retried by the model,
-    /// by the middleware, or by a user clicking approve twice, and "send the invoice" is not
-    /// something to do twice because a socket hiccuped.
+    /// The idempotency key is not optional: it is the execution's own identity, so a retry — by the
+    /// model, by the middleware, or by a user clicking approve twice — replays the first answer
+    /// instead of paying an invoice again because a socket hiccuped.
     /// </remarks>
-    public Task<JsonElement> SendJsonAsync(
+    public Task<ApiResponse> SendAsync(
         HttpMethod method,
         string relativeUrl,
         object? body,
         string idempotencyKey,
         CancellationToken cancellationToken) =>
-        SendAsync(method, relativeUrl, body, idempotencyKey, cancellationToken);
+        SendCoreAsync(method, relativeUrl, body, idempotencyKey, cancellationToken);
 
-    private async Task<JsonElement> SendAsync(
+    private async Task<ApiResponse> SendCoreAsync(
         HttpMethod method,
         string relativeUrl,
         object? body,
@@ -71,28 +85,32 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
 
         using var response = await http.SendAsync(request, cancellationToken);
         var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-        activity?.SetTag("http.response.status_code", (int)response.StatusCode);
+        var status = (int)response.StatusCode;
+        activity?.SetTag("http.response.status_code", status);
 
         if (!response.IsSuccessStatusCode)
         {
-            logger.LogInformation("Tool call to {Path} was rejected with {Status}", uri.AbsolutePath, (int)response.StatusCode);
+            logger.LogInformation("Tool call to {Path} was rejected with {Status}", uri.AbsolutePath, status);
             activity?.SetStatus(ActivityStatusCode.Error, response.StatusCode.ToString());
-            return DescribeFailure(response.StatusCode, responseBody);
+
+            var (failure, code) = DescribeFailure(response.StatusCode, responseBody);
+            return new ApiResponse(status, failure, code);
         }
 
         // 204 and an empty 200 are legitimate write responses with nothing to hand the model.
         if (string.IsNullOrWhiteSpace(responseBody))
         {
-            return JsonSerializer.SerializeToElement(new { status = "ok" });
+            return new ApiResponse(status, JsonSerializer.SerializeToElement(new { status = "ok" }), Code: null);
         }
 
         if (TryParse(responseBody, out var payload))
         {
-            return payload;
+            return new ApiResponse(status, payload, Code: null);
         }
 
         logger.LogError("The response from {Path} was not JSON.", uri.AbsolutePath);
-        return DescribeFailure(HttpStatusCode.InternalServerError, string.Empty);
+        var (malformed, malformedCode) = DescribeFailure(HttpStatusCode.InternalServerError, string.Empty);
+        return new ApiResponse(StatusCodes.Status500InternalServerError, malformed, malformedCode);
     }
 
     private Uri ResolveBaseAddress()
@@ -109,19 +127,22 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
         return new Uri($"{request.Scheme}://{request.Host}");
     }
 
-    private static JsonElement DescribeFailure(HttpStatusCode statusCode, string body)
+    private static (JsonElement Payload, string? Code) DescribeFailure(HttpStatusCode statusCode, string body)
     {
+        var family = statusCode switch
+        {
+            HttpStatusCode.Unauthorized => "unauthenticated",
+            HttpStatusCode.Forbidden => "forbidden",
+            HttpStatusCode.NotFound => "not_found",
+            HttpStatusCode.Conflict => "domain_error",
+            HttpStatusCode.BadRequest => "invalid_request",
+            HttpStatusCode.PreconditionFailed => "resource_changed",
+            _ => "api_error",
+        };
+
         var error = new JsonObject
         {
-            ["error"] = statusCode switch
-            {
-                HttpStatusCode.Unauthorized => "unauthenticated",
-                HttpStatusCode.Forbidden => "forbidden",
-                HttpStatusCode.NotFound => "not_found",
-                HttpStatusCode.Conflict => "domain_error",
-                HttpStatusCode.BadRequest => "invalid_request",
-                _ => "api_error",
-            },
+            ["error"] = family,
             ["status"] = (int)statusCode,
         };
 
@@ -143,7 +164,7 @@ public sealed class SelfApiClient(HttpClient http, IHttpContextAccessor httpCont
                 : body[..Math.Min(body.Length, 500)];
         }
 
-        return JsonSerializer.SerializeToElement(error);
+        return (JsonSerializer.SerializeToElement(error), code ?? family);
     }
 
     private static bool TryParse(string body, out JsonElement payload)

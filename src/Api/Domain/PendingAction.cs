@@ -90,54 +90,15 @@ public sealed class PendingAction
 
     public ActionResolutionReason? ResolutionReason { get; private set; }
 
-    public bool IsOpen(DateTimeOffset now) => Status is PendingActionStatus.Pending && now < ExpiresAt;
-
     /// <summary>
-    /// Claims the action so it can execute. Returns false when it was already used or has lapsed —
-    /// the caller must not proceed, and this is what makes approval single-use even if two tabs
-    /// click at once.
+    /// Still approvable: not yet resolved, and inside its window.
     /// </summary>
-    public bool TryApprove(Guid approverId, DateTimeOffset now)
-    {
-        if (!IsOpen(now))
-        {
-            Expire(now);
-            return false;
-        }
-
-        Resolve(PendingActionStatus.Approved, ActionResolutionReason.UserApproved, approverId, now);
-        return true;
-    }
-
-    public bool TryReject(Guid approverId, DateTimeOffset now)
-    {
-        if (!IsOpen(now))
-        {
-            Expire(now);
-            return false;
-        }
-
-        Resolve(PendingActionStatus.Rejected, ActionResolutionReason.UserRejected, approverId, now);
-        return true;
-    }
-
-    private void Resolve(
-        PendingActionStatus status,
-        ActionResolutionReason reason,
-        Guid? approverId,
-        DateTimeOffset now)
-    {
-        Status = status;
-        ResolutionReason = reason;
-        ResolvedByUserId = approverId;
-        ResolvedAt = now;
-    }
-
-    private void Expire(DateTimeOffset now)
-    {
-        if (Status is PendingActionStatus.Pending && now >= ExpiresAt)
-        {
-            Resolve(PendingActionStatus.Expired, ActionResolutionReason.Expired, approverId: null, now);
-        }
-    }
+    /// <remarks>
+    /// A read, not a claim. It answers "should a button be offered?", which is a question about
+    /// rendering. Whether this caller <em>gets</em> the action is decided by the conditional update
+    /// in <c>ActionResolver</c> — deliberately not by this method, because two requests can both
+    /// see an open action and only one may have it. There is no <c>TryApprove</c> here for exactly
+    /// that reason: an in-memory status check was the concurrency bug, not the guard against it.
+    /// </remarks>
+    public bool IsOpen(DateTimeOffset now) => Status is PendingActionStatus.Pending && now < ExpiresAt;
 }

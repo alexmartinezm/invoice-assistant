@@ -175,15 +175,43 @@ export interface ConversationUsageDetail {
   toolEvents: ToolEventRow[];
 }
 
+/** Where an attempt at an approved write has got to. `unknown` is not a synonym for `failed`. */
+export type ExecutionStatus = 'pending' | 'executing' | 'succeeded' | 'failed' | 'unknown';
+
 /**
  * What became of a proposed write. `summary` and `message` are both written by the server: the
  * sentence a person agreed to, and the sentence describing what happened, are never the model's.
+ *
+ * The decision and the execution are separate fields because they answer different questions.
+ * `decisionStatus` is about a person — did somebody approve this? `executionStatus` is about the
+ * world — did it happen? Collapsing them would mean rendering "approved" as "done", which is the
+ * claim the server is no longer willing to make on an unconfirmed write.
  */
 export interface ActionOutcome {
   actionId: string;
-  status: 'approved' | 'rejected' | 'failed';
+  executionId: string | null;
+  decisionStatus: 'approved' | 'rejected' | 'expired' | 'pending';
+  executionStatus: ExecutionStatus | null;
   summary: string;
   message: string;
+  deliveryStatus: string | null;
+}
+
+/** The attempt a decision authorized, as the API reports it. */
+export interface ActionExecutionView {
+  executionId: string;
+  actionId: string | null;
+  tool: string;
+  decision: 'auto' | 'confirmed';
+  status: ExecutionStatus;
+  attempts: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  errorCode: string | null;
+  errorDetail: string | null;
+  deliveryId: string | null;
+  deliveryStatus: string | null;
 }
 
 /** A proposal waiting on somebody, as the server describes it to whoever is looking. */
@@ -202,4 +230,6 @@ export interface PendingActionView {
    */
   canApprove: boolean;
   requiredRole: string | null;
+  /** The attempt this decision authorized, once there is one. */
+  execution: ActionExecutionView | null;
 }

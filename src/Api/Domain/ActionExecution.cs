@@ -107,24 +107,19 @@ public sealed class ActionExecution
     /// </summary>
     public string IdempotencyKey => Id.ToString();
 
-    /// <summary>True while the outcome is still owed — the states a caller should keep watching.</summary>
+    /// <summary>True once the outcome is known and will not change again.</summary>
     public bool IsSettled => Status is ActionExecutionStatus.Succeeded or ActionExecutionStatus.Failed;
 
-    /// <summary>Marks a request as going out. Counts the attempt, because a retry is not a first try.</summary>
-    public void Start(DateTimeOffset now)
-    {
-        Require(ActionExecutionStatus.Pending, ActionExecutionStatus.Unknown);
-
-        Status = ActionExecutionStatus.Executing;
-        StartedAt ??= now;
-        LastAttemptAt = now;
-        NextAttemptAt = null;
-        AttemptCount++;
-    }
-
+    /// <remarks>
+    /// There is no <c>Start</c> here, and the omission is the point. Claiming an attempt is a
+    /// decision between concurrent requests, so it is a conditional <c>UPDATE</c> in
+    /// <c>ActionExecutor</c>, not a method two callers could both reach. The settle methods below
+    /// are safe as entity transitions because only the caller holding that claim reaches them —
+    /// and if one somehow does not, the terminal-state guard refuses rather than rewriting history.
+    /// </remarks>
     public void Succeed(int statusCode, string? resultJson, DateTimeOffset now)
     {
-        Require(ActionExecutionStatus.Executing, ActionExecutionStatus.Unknown);
+        RequireOpen();
 
         Status = ActionExecutionStatus.Succeeded;
         ResultStatusCode = statusCode;
@@ -141,7 +136,7 @@ public sealed class ActionExecution
     /// </summary>
     public void Fail(int? statusCode, string errorCode, string? detail, DateTimeOffset now)
     {
-        Require(ActionExecutionStatus.Pending, ActionExecutionStatus.Executing, ActionExecutionStatus.Unknown);
+        RequireOpen();
 
         Status = ActionExecutionStatus.Failed;
         ResultStatusCode = statusCode;
@@ -158,7 +153,7 @@ public sealed class ActionExecution
     /// </summary>
     public void MarkUnknown(string errorCode, string? detail, DateTimeOffset reconcileAt)
     {
-        Require(ActionExecutionStatus.Executing, ActionExecutionStatus.Unknown);
+        RequireOpen();
 
         Status = ActionExecutionStatus.Unknown;
         ErrorCode = errorCode;
@@ -173,7 +168,7 @@ public sealed class ActionExecution
     /// </summary>
     public void AwaitDelivery(Guid deliveryId, int statusCode, string? resultJson, DateTimeOffset now)
     {
-        Require(ActionExecutionStatus.Executing, ActionExecutionStatus.Unknown);
+        RequireOpen();
 
         Status = ActionExecutionStatus.Executing;
         DeliveryId = deliveryId;
@@ -184,12 +179,15 @@ public sealed class ActionExecution
 
     public void RecordProviderMessage(string providerMessageId) => ProviderMessageId = providerMessageId;
 
-    private void Require(params ActionExecutionStatus[] allowed)
+    /// <summary>
+    /// Succeeded and Failed are terminal. Everything else may still move, including Unknown — an
+    /// execution reconciled from an authoritative receipt is the whole reason that state exists.
+    /// </summary>
+    private void RequireOpen()
     {
-        if (!allowed.Contains(Status))
+        if (IsSettled)
         {
-            throw new InvalidOperationException(
-                $"An execution in {Status} cannot move from there; expected one of {string.Join(", ", allowed)}.");
+            throw new InvalidOperationException($"An execution that already {Status} cannot be settled again.");
         }
     }
 
