@@ -168,7 +168,9 @@ public static class ActionEndpoints
             Mine: action.UserId == principal.Id(),
             CanApprove: action.IsOpen(now) && tool is not null && role >= tool.RequiredRole,
             RequiredRole: tool?.RequiredRole.ToString(),
-            Execution: execution is null ? null : ActionExecutionView.Of(execution));
+            Execution: execution is null
+                ? null
+                : ActionExecutionView.Of(execution, message: ActionNarrator.Describe(action.Summary, execution)));
     }
 
     private static async Task<IResult> ApproveAsync(
@@ -239,10 +241,21 @@ public static class ActionEndpoints
         var decision = await gate.AuthoriseApprovalAsync(tool, args.RootElement, principal.Role(), cancellationToken);
         if (decision.Action is PolicyAction.Deny)
         {
-            await resolver.ResolveWithoutExecutingAsync(
-                action, approverId, PendingActionStatus.Rejected, ActionResolutionReason.PolicyDenied, cancellationToken);
-            await resolver.AuditAsync(
-                approverId, tool.Name, args.RootElement, AuditDecision.Denied, decision.Reason, action.ConversationId, cancellationToken);
+            var denied = await resolver.ResolveWithoutExecutingAsync(
+                action, approverId, PendingActionStatus.Rejected, ActionResolutionReason.PolicyDenied,
+                args.RootElement, AuditDecision.Denied, decision.Reason, cancellationToken);
+
+            if (!denied.Won)
+            {
+                // Somebody resolved it between the policy check and the write. The refusal is still
+                // a fact about this attempt and is recorded, but the row's outcome belongs to
+                // whoever won — answering 403 would attribute a resolution this click did not make.
+                await resolver.AuditAsync(
+                    approverId, tool.Name, args.RootElement, AuditDecision.Denied, decision.Reason,
+                    action.ConversationId, cancellationToken);
+
+                return Closed(denied.Action, clock.UtcNow);
+            }
 
             return Results.Problem(
                 title: "Not permitted",
@@ -259,6 +272,11 @@ public static class ActionEndpoints
             if (claim.Failure is ClaimFailure.NotFingerprinted)
             {
                 return NotReplayable(claim.Action);
+            }
+
+            if (claim.Failure is ClaimFailure.Tampered)
+            {
+                return Tampered(claim.Action);
             }
 
             // Lost the race. If this caller is the one who won it a moment ago — two tabs, one
@@ -291,8 +309,13 @@ public static class ActionEndpoints
         ILogger logger,
         CancellationToken cancellationToken)
     {
-        // Settled, or already in flight on another request: report it, do not race it.
-        if (execution.IsSettled || execution.Status is ActionExecutionStatus.Executing)
+        // Settled, or genuinely in flight somewhere else: report it, do not race it.
+        //
+        // "Genuinely" is doing the work. An Executing row whose attempt lease has expired belongs to
+        // a request that is not coming back, and reporting it as in flight is what left executions
+        // — and the card watching them — stuck on "executing" for ever. That one falls through to
+        // the executor, which checks the receipt before it considers sending anything again.
+        if (execution.IsSettled || IsAttemptLive(execution, clock.UtcNow))
         {
             return await OutcomeAsync(
                 action, execution, ActionNarrator.Describe(action.Summary, execution),
@@ -323,6 +346,18 @@ public static class ActionEndpoints
         return await OutcomeAsync(action, settled, message, attempt.Payload, clock.UtcNow, db, cancellationToken);
     }
 
+    /// <summary>
+    /// Whether some other request is still working on this execution.
+    /// </summary>
+    /// <remarks>
+    /// An execution waiting on a delivery is <c>Executing</c> with no attempt lease — the outbox
+    /// owns it, not an HTTP request — and must not be picked up here either, which is why a missing
+    /// lease counts as live for anything already past its first attempt.
+    /// </remarks>
+    private static bool IsAttemptLive(ActionExecution execution, DateTimeOffset now) =>
+        execution.Status is ActionExecutionStatus.Executing
+        && (execution.AttemptExpiresAt is null || execution.AttemptExpiresAt > now);
+
     private static async Task<IResult> RejectAsync(
         Guid id,
         ClaimsPrincipal principal,
@@ -337,8 +372,11 @@ public static class ActionEndpoints
             return NotFound(id);
         }
 
+        using var args = JsonDocument.Parse(action.ArgsJson);
+
         var claim = await resolver.ResolveWithoutExecutingAsync(
-            action, principal.Id(), PendingActionStatus.Rejected, ActionResolutionReason.UserRejected, cancellationToken);
+            action, principal.Id(), PendingActionStatus.Rejected, ActionResolutionReason.UserRejected,
+            args.RootElement, AuditDecision.Rejected, "The user declined the proposed action.", cancellationToken);
 
         if (!claim.Won)
         {
@@ -437,6 +475,13 @@ public static class ActionEndpoints
             + "Ask the assistant again to propose it afresh.",
         statusCode: StatusCodes.Status409Conflict,
         extensions: new Dictionary<string, object?> { ["code"] = "action_not_replayable" });
+
+    private static IResult Tampered(PendingAction action) => Results.Problem(
+        title: "Action cannot be executed",
+        detail: $"'{action.ToolName}' no longer matches the command that was proposed, so nothing was done. "
+            + "Ask the assistant again to propose it afresh.",
+        statusCode: StatusCodes.Status409Conflict,
+        extensions: new Dictionary<string, object?> { ["code"] = "action_tampered" });
 
     private static IResult NotFound(Guid id) => Results.Problem(
         title: "Action not found",

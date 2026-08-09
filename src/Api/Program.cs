@@ -94,6 +94,12 @@ builder.Services.AddSingleton<IFaultInjector, NoFaults>();
 builder.Services.AddScoped<TransactionalIdempotencyFilter>();
 builder.Services.AddHostedService<IdempotencyCleanupService>();
 
+// Finishes executions whose caller never came back — from receipts and deliveries only, never by
+// re-running a write it has no identity for.
+builder.Services.AddScoped<ExecutionReconciler>();
+builder.Services.AddHostedService<ExecutionReconciler>(provider =>
+    ActivatorUtilities.CreateInstance<ExecutionReconciler>(provider));
+
 // The provider is a singleton because its receipts are its own: they stand in for state held on the
 // other side of the boundary, and putting them in our database would quietly make that boundary
 // transactional and the whole demonstration meaningless.

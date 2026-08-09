@@ -23,7 +23,7 @@ namespace Api.Features.Actions;
 public sealed class ActionNarrator(AppDbContext db, IClock clock)
 {
     /// <summary>
-    /// Five outcomes, five sentences. The copy is the only place a person learns that "approved"
+    /// Six outcomes, six sentences. The copy is the only place a person learns that "approved"
     /// and "done" are not the same thing.
     /// </summary>
     public static string Describe(string summary, ActionExecution execution) => execution switch
@@ -37,6 +37,14 @@ public sealed class ActionNarrator(AppDbContext db, IClock clock)
             $"{summary} — not done: the invoice changed after this was proposed, so the approval no "
                 + "longer matches what you were shown. Ask again to see the current state.",
 
+        // The one failure where "nothing changed" is false. The local write committed — the invoice
+        // is Sent, the customer owes money — and the provider then refused to carry it. Two facts,
+        // stated separately, because the user's next step depends on the second one and collapsing
+        // them into the general sentence would send them looking for an invoice still in draft.
+        { Status: ActionExecutionStatus.Failed, ErrorCode: "delivery_rejected" } =>
+            $"{summary} — the invoice was issued, but the provider would not deliver it"
+                + $"{Because(execution.ErrorDetail)}. Fix the recipient and send it again.",
+
         { Status: ActionExecutionStatus.Failed } =>
             $"{summary} — approved, but it did not go through. Nothing changed.",
 
@@ -45,6 +53,14 @@ public sealed class ActionNarrator(AppDbContext db, IClock clock)
 
         _ => $"{summary} — approved and running.",
     };
+
+    /// <summary>The provider's own words, when it gave any. Trimmed so the sentence stays one.</summary>
+    private const int MaxDetailLength = 120;
+
+    private static string Because(string? detail) =>
+        detail is not { Length: > 0 }
+            ? string.Empty
+            : $" ({(detail.Length <= MaxDetailLength ? detail : detail[..MaxDetailLength] + "…")})";
 
     /// <summary>
     /// Appends the outcome to the conversation, so the next turn's history contains what actually

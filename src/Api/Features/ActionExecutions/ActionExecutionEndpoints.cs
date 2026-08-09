@@ -37,6 +37,7 @@ public static class ActionExecutionEndpoints
         Guid id,
         ClaimsPrincipal principal,
         AppDbContext db,
+        ActionNarrator narrator,
         CancellationToken cancellationToken)
     {
         var execution = await db.ActionExecutions.AsNoTracking()
@@ -54,7 +55,13 @@ public static class ActionExecutionEndpoints
         }
 
         var deliveryStatus = await DeliveryStatusAsync(execution, db, cancellationToken);
-        return Results.Ok(ActionExecutionView.Of(execution, deliveryStatus));
+
+        // The sentence travels with the state it describes. This endpoint is what the card polls
+        // while an execution is still moving, so it is the one place a client would otherwise have
+        // to invent the copy for an outcome only the server can characterise.
+        var message = await narrator.DescribeSettledAsync(execution, cancellationToken);
+
+        return Results.Ok(ActionExecutionView.Of(execution, deliveryStatus, message));
     }
 
     /// <summary>

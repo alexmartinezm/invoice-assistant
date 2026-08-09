@@ -186,13 +186,17 @@ business change and the receipt that replays it commit together or not at all:
 | New key | The handler's settled result; effect and receipt commit together |
 | Same key, same fingerprint | The stored status and body, replayed |
 | Same key, different fingerprint | `422 idempotency_key_payload_mismatch` |
+| A body over 256 KiB | `413 request_body_too_large` — refused rather than fingerprinted by its prefix |
 | A twin still running | Waits on the row, then replays; `409 request_in_progress` past a bounded lock timeout |
+| The handler cannot get its own lock | `409 request_in_progress` — the timeout covers the handler's statements too |
 | 5xx or an exception | Rolled back entirely; the key is free and the retry is a first attempt |
 
 The fingerprint is `SHA256(method, normalized path and query, body, If-Match)`, scoped by user.
-Credentials are never part of it and never stored. Receipts expire after 30 days by **deletion** —
-the previous design ignored old rows on read while the unique index kept reserving them, so a key
-could be simultaneously too old to replay and already taken.
+Credentials are never part of it and never stored, and the body is read to the cap and no further:
+two requests that agree for 256 KiB are not the same request, so an oversized one is refused rather
+than hashed short. Receipts expire after 30 days by **deletion** — the previous design ignored old
+rows on read while the unique index kept reserving them, so a key could be simultaneously too old to
+replay and already taken.
 
 `POST /api/invoices/{number}/send` answers **202** with a delivery record rather than 200. The
 ledger change is done; the email is not, and the status code says which. No handler under the
@@ -247,7 +251,9 @@ question and needs different machinery (ADR 009).
 | Authorization | One durable resolution wins per `PendingAction`, decided by a conditional `UPDATE` | A later request is a new decision unless it resumes the same execution |
 | Local effect | The business change and its replay receipt commit or roll back together | Only for requests carrying a key through the transactional write pipeline |
 | HTTP retry | Same user, key and fingerprint returns the stored answer without executing | A different fingerprint is refused, never treated as a retry |
-| Approval freshness | Approved arguments execute only against the captured revision | A changed invoice needs a fresh proposal |
+| Approval freshness | Approved arguments execute only against the captured revision, and the command fingerprint is re-verified | A changed invoice — or an altered proposal — needs a fresh one |
+| Abandoned attempt | An attempt holds a lease; when it lapses the execution is reclaimable under the same key | A resume is a replay, never a second write |
+| Recovery | A background pass settles from receipts and deliveries and releases what it cannot settle | It **never** re-executes: it holds no bearer token and must not acquire one |
 | Outbox delivery | Committed work is retried until settled or classified | **At-least-once dispatch**, not exactly-once |
 | Provider effect | Effectively-once *when the provider honours a stable key or exposes receipt lookup* | With neither, an ambiguous result stays `Unknown` and is not retried |
 
@@ -255,6 +261,11 @@ The last row is the one to read carefully. Nothing in this repository claims exa
 and nothing may claim it without naming the provider capability that makes it so. `send_invoice`
 gets it because the demo provider deduplicates on the stable key; a provider that did neither would
 leave deliveries `Unknown` for a person to resolve, which is the honest outcome rather than a gap.
+
+That last sentence is a tested claim rather than an intention: the demo provider's capabilities are
+settable, its behaviour follows them, and the suite runs the ambiguous path against a provider that
+does neither. An ambiguous send is parked in its own outbox status, out of the dispatcher's reach,
+so nothing returns it to the queue through the passage of time alone.
 
 The turn's own flow gains one step before anything is sent: **no assistant write goes out before its
 decision and its execution identity are durably stored.** That includes a policy-allowed write, so

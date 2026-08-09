@@ -11,6 +11,12 @@ namespace Api.Features.Actions;
 /// what the body would add is a second copy of a payload they already received, with whatever a
 /// failing endpoint happened to put in it.
 /// </remarks>
+/// <param name="Message">
+/// The sentence to show. The server writes every one of these (ADR 007), and this field is how a
+/// polling client gets the same one the transcript did. A client that rebuilds the sentence from
+/// <see cref="Status"/> will eventually contradict the server — it did, for the delivery the
+/// provider refused, where the status is <c>failed</c> but the invoice was issued all the same.
+/// </param>
 public sealed record ActionExecutionView(
     Guid ExecutionId,
     Guid? ActionId,
@@ -24,9 +30,13 @@ public sealed record ActionExecutionView(
     string? ErrorCode,
     string? ErrorDetail,
     Guid? DeliveryId,
-    string? DeliveryStatus)
+    string? DeliveryStatus,
+    string? Message)
 {
-    public static ActionExecutionView Of(ActionExecution execution, string? deliveryStatus = null) => new(
+    public static ActionExecutionView Of(
+        ActionExecution execution,
+        string? deliveryStatus = null,
+        string? message = null) => new(
         execution.Id,
         execution.PendingActionId,
         execution.ToolName,
@@ -39,5 +49,6 @@ public sealed record ActionExecutionView(
         execution.ErrorCode,
         execution.ErrorDetail,
         execution.DeliveryId,
-        deliveryStatus);
+        deliveryStatus,
+        message);
 }

@@ -37,10 +37,21 @@ public sealed class ActionExecutor(
     SelfApiClient api,
     AppDbContext db,
     IClock clock,
+    IFaultInjector faults,
     ILogger<ActionExecutor> logger)
 {
     /// <summary>How long before a reconciler looks at an execution whose answer was lost.</summary>
     public static readonly TimeSpan ReconcileDelay = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// How long one attempt may hold an execution before another caller may take it over.
+    /// </summary>
+    /// <remarks>
+    /// Comfortably longer than the self-API client's own 30-second timeout, so a slow-but-alive
+    /// request is never stolen from underneath itself; short enough that a process that died leaves
+    /// the execution recoverable within a minute rather than for ever.
+    /// </remarks>
+    public static readonly TimeSpan AttemptLease = TimeSpan.FromMinutes(2);
 
     /// <param name="ifMatch">
     /// The resource revision the approval was bound to, or null for a write nobody had to approve.
@@ -78,6 +89,10 @@ public sealed class ActionExecutor(
 
         activity?.SetTag("assistant.attempt", execution.AttemptCount);
 
+        // The window the audit found unrecoverable: the attempt is claimed and durable, and nothing
+        // has gone out yet. A test stops the process exactly here.
+        faults.Reach(FaultCheckpoint.AfterApprovalClaimCommitted);
+
         ApiResponse response;
 
         try
@@ -92,30 +107,23 @@ public sealed class ActionExecutor(
                 exception, "Execution {ExecutionId} lost its answer from {Path}", execution.Id, call.Url);
 
             execution.MarkUnknown("transport_lost", exception.Message, clock.UtcNow + ReconcileDelay);
-            return await SettleAsync(execution, Ambiguous(execution), activity, cancellationToken);
+
+            // Deliberately not the request's token. It is very often *already cancelled* — that is
+            // why we are in this catch — and saving under it would drop the one row that records the
+            // outcome as unknown, leaving the execution stuck mid-attempt.
+            return await SettleAsync(execution, Ambiguous(execution), activity, CancellationToken.None);
         }
 
-        if (response.StatusCode is StatusCodes.Status202Accepted && DeliveryIn(response.Payload) is { } deliveryId)
-        {
-            // The local effect committed and handed off to an outbox. Nothing about the external
-            // effect is known yet, so the execution stays running rather than claiming a success
-            // the customer has not received.
-            execution.AwaitDelivery(deliveryId, response.StatusCode, response.Payload.GetRawText(), clock.UtcNow);
-        }
-        else if (response.IsSuccess)
-        {
-            execution.Succeed(response.StatusCode, response.Payload.GetRawText(), clock.UtcNow);
-        }
-        else if (response.StatusCode >= StatusCodes.Status500InternalServerError)
-        {
-            // A 500 can be raised after the handler's transaction committed but before the response
-            // was written. The idempotency receipt is the authority on which of the two happened.
-            execution.MarkUnknown(response.Code ?? "api_error", Detail(response), clock.UtcNow + ReconcileDelay);
-        }
-        else
-        {
-            execution.Fail(response.StatusCode, response.Code ?? "api_error", Detail(response), clock.UtcNow);
-        }
+        ExecutionOutcome
+            .Classify(response.StatusCode, response.Payload)
+            .ApplyTo(
+                execution,
+                response.StatusCode,
+                response.Payload.GetRawText(),
+                response.Code,
+                Detail(response),
+                clock.UtcNow,
+                ReconcileDelay);
 
         return await SettleAsync(execution, response.Payload, activity, cancellationToken);
     }
@@ -149,14 +157,18 @@ public sealed class ActionExecutor(
         logger.LogInformation(
             "Execution {ExecutionId} reconciled from its idempotency receipt with {Status}.", execution.Id, receipt.StatusCode);
 
-        if (receipt.StatusCode is >= 200 and < 300)
-        {
-            execution.Succeed(receipt.StatusCode, receipt.ResponseJson, clock.UtcNow);
-        }
-        else
-        {
-            execution.Fail(receipt.StatusCode, "api_error", detail: null, clock.UtcNow);
-        }
+        // The same reading as a live response. A stored 202 that handed off to an outbox restores
+        // AwaitDelivery — treating it as success here was how a queued email became a "Done".
+        ExecutionOutcome
+            .ClassifyStored(receipt.StatusCode, receipt.ResponseJson)
+            .ApplyTo(
+                execution,
+                receipt.StatusCode,
+                receipt.ResponseJson,
+                errorCode: "api_error",
+                detail: null,
+                clock.UtcNow,
+                ReconcileDelay);
 
         if (db.Entry(execution).State is EntityState.Detached)
         {
@@ -178,13 +190,21 @@ public sealed class ActionExecutor(
 
         var claimed = await db.ActionExecutions
             .Where(e => e.Id == executionId
-                && (e.Status == ActionExecutionStatus.Pending || e.Status == ActionExecutionStatus.Unknown))
+                && (e.Status == ActionExecutionStatus.Pending
+                    || e.Status == ActionExecutionStatus.Unknown
+                    // An attempt whose lease ran out belongs to nobody. Taking it over is safe
+                    // because the retry carries the same idempotency key, so the receipt decides
+                    // whether this is a resume or a replay — see TryReconcileFromReceiptAsync.
+                    || (e.Status == ActionExecutionStatus.Executing
+                        && e.AttemptExpiresAt != null
+                        && e.AttemptExpiresAt <= now)))
             .ExecuteUpdateAsync(
                 set => set
                     .SetProperty(e => e.Status, ActionExecutionStatus.Executing)
                     .SetProperty(e => e.AttemptCount, e => e.AttemptCount + 1)
                     .SetProperty(e => e.StartedAt, e => e.StartedAt ?? now)
                     .SetProperty(e => e.LastAttemptAt, (DateTimeOffset?)now)
+                    .SetProperty(e => e.AttemptExpiresAt, (DateTimeOffset?)(now + AttemptLease))
                     .SetProperty(e => e.NextAttemptAt, (DateTimeOffset?)null),
                 cancellationToken);
 
@@ -253,25 +273,6 @@ public sealed class ActionExecutor(
         detail = "The request was sent and no answer came back, so it is not known whether it took effect. "
             + "Do not claim it succeeded or failed; say the outcome is being confirmed.",
     });
-
-    /// <summary>
-    /// The delivery a <c>202</c> handed off to.
-    /// </summary>
-    /// <remarks>
-    /// The status code carries the meaning, not the field. An invoice detail mentions its delivery
-    /// on every response — <c>mark-paid</c> included — and reading that as a hand-off would leave
-    /// executions waiting on somebody else's email. <c>202</c> is the endpoint saying "the local
-    /// part is done and the rest is on somebody else's network", which is a different outcome from
-    /// "done" and has to be classified as one.
-    /// </remarks>
-    private static Guid? DeliveryIn(JsonElement payload) =>
-        payload.ValueKind is JsonValueKind.Object
-            && payload.TryGetProperty("delivery", out var delivery)
-            && delivery.ValueKind is JsonValueKind.Object
-            && delivery.TryGetProperty("id", out var id)
-            && id.TryGetGuid(out var deliveryId)
-                ? deliveryId
-                : null;
 
     private static string? Detail(ApiResponse response) =>
         response.Payload.ValueKind is JsonValueKind.Object

@@ -33,17 +33,23 @@ public sealed class DeliveryReconciler(
 
     public const int BatchSize = 20;
 
+    /// <summary>Matches the dispatcher's, so neither can quietly outlive the other's claim.</summary>
+    public static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(1);
+
     /// <summary>Settles what it can and returns how many deliveries it resolved.</summary>
     public async Task<int> ReconcileAsync(CancellationToken cancellationToken)
     {
+        var now = clock.UtcNow;
+
         if (!provider.Capabilities.SupportsReceiptLookup)
         {
-            // Nothing to ask. Leaving these Unknown is the correct outcome, not a gap: an
-            // unanswerable question does not become answerable by retrying the request.
-            return 0;
+            // Nothing to ask. With a stable key a resend is still safe, so the parked rows can go
+            // back to the queue; without one they stay parked and wait for a person. Neither branch
+            // guesses, and neither sends a second email on the strength of a shrug.
+            return provider.Capabilities.HonoursStableKey
+                ? await ResumeParkedAsync(now, cancellationToken)
+                : 0;
         }
-
-        var now = clock.UtcNow;
 
         var unknown = await db.InvoiceDeliveries
             .Where(delivery => delivery.Status == InvoiceDeliveryStatus.Unknown)
@@ -52,9 +58,18 @@ public sealed class DeliveryReconciler(
             .ToListAsync(cancellationToken);
 
         var settled = 0;
+        var owner = $"reconciler:{Environment.MachineName}:{Guid.CreateVersion7():N}";
 
         foreach (var delivery in unknown)
         {
+            // Take the outbox row before touching the provider. Without this the reconciler and the
+            // dispatcher could both be holding the same delivery, and the reconciler's write would
+            // clear a lease the dispatcher was still working under.
+            if (!await TryLeaseAsync(delivery.Id, owner, now, cancellationToken))
+            {
+                continue;
+            }
+
             using var activity = AssistantTelemetry.Source.StartActivity("assistant.action.reconcile");
             activity?.SetTag("assistant.delivery_id", delivery.Id);
             activity?.SetTag("assistant.execution_id", delivery.ExecutionId);
@@ -65,8 +80,15 @@ public sealed class DeliveryReconciler(
             if (receipt is null)
             {
                 // An authoritative "not found" from a provider that can answer means it never took
-                // it, so the outbox row is free to try again on its own schedule.
+                // it, so the outbox row is free to try again on its own schedule. This is the only
+                // route back into the queue for a provider with lookup: a resend now sends something
+                // the provider has told us it never received.
+                logger.LogInformation("Delivery {DeliveryId} was never received; returning it to the queue.", delivery.Id);
+
+                delivery.Requeued();
+                await ResumeOutboxAsync(delivery.Id, now, cancellationToken);
                 activity?.SetTag("assistant.delivery_result", "not_found");
+                settled++;
                 continue;
             }
 
@@ -91,11 +113,66 @@ public sealed class DeliveryReconciler(
 
     private async Task CompleteOutboxAsync(Guid deliveryId, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var message = await db.OutboxMessages
-            .SingleOrDefaultAsync(m => m.DeliveryId == deliveryId && m.Status == OutboxStatus.Pending, cancellationToken);
-
+        var message = await OutboxFor(deliveryId, cancellationToken);
         message?.Complete(now);
     }
+
+    /// <summary>
+    /// Claims the parked row for this reconciler, refusing if a live lease says somebody else has it.
+    /// </summary>
+    private async Task<bool> TryLeaseAsync(
+        Guid deliveryId,
+        string owner,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var leased = await db.OutboxMessages
+            .Where(message => message.DeliveryId == deliveryId
+                && message.Status == OutboxStatus.AwaitingReconciliation
+                && (message.LeaseExpiresAt == null || message.LeaseExpiresAt <= now))
+            .ExecuteUpdateAsync(
+                set => set
+                    .SetProperty(m => m.LeaseOwner, owner)
+                    .SetProperty(m => m.LeaseExpiresAt, (DateTimeOffset?)(now + LeaseDuration)),
+                cancellationToken);
+
+        return leased == 1;
+    }
+
+    private async Task ResumeOutboxAsync(Guid deliveryId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var message = await OutboxFor(deliveryId, cancellationToken);
+        message?.ResumeAfterReconciliation(now);
+    }
+
+    /// <summary>
+    /// Returns every parked row to the queue. Only reachable for a provider that deduplicates on the
+    /// stable key, which is what makes sending again a repeat rather than a second email.
+    /// </summary>
+    private async Task<int> ResumeParkedAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var parked = await db.OutboxMessages
+            .Where(message => message.Status == OutboxStatus.AwaitingReconciliation && message.AvailableAt <= now)
+            .OrderBy(message => message.AvailableAt)
+            .Take(BatchSize)
+            .ToListAsync(cancellationToken);
+
+        foreach (var message in parked)
+        {
+            message.ResumeAfterReconciliation(now);
+        }
+
+        if (parked.Count > 0)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return parked.Count;
+    }
+
+    private Task<OutboxMessage?> OutboxFor(Guid deliveryId, CancellationToken cancellationToken) =>
+        db.OutboxMessages.SingleOrDefaultAsync(
+            m => m.DeliveryId == deliveryId && m.Status != OutboxStatus.Completed, cancellationToken);
 
     private async Task SettleExecutionAsync(
         InvoiceDelivery delivery,

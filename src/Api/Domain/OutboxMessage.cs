@@ -2,7 +2,20 @@ namespace Api.Domain;
 
 public enum OutboxStatus
 {
+    /// <summary>Due, or waiting for its backoff. The dispatcher claims from here and nowhere else.</summary>
     Pending,
+
+    /// <summary>
+    /// Dispatched with an unknown outcome. Parked: the reconciler owns it, the dispatcher must not
+    /// see it.
+    /// </summary>
+    /// <remarks>
+    /// This state exists because parking used to mean "Pending with a later AvailableAt", which the
+    /// dispatcher happily re-claimed the moment that time passed — turning "we do not know whether
+    /// the customer got this email" into a second email. Ambiguity is not a backoff.
+    /// </remarks>
+    AwaitingReconciliation,
+
     Completed,
 }
 
@@ -98,12 +111,46 @@ public sealed class OutboxMessage
         AvailableAt = availableAt;
         LeaseOwner = null;
         LeaseExpiresAt = null;
-        LastError = error is null || error.Length <= MaxErrorLength ? error : error[..MaxErrorLength];
+        LastError = Bounded(error);
     }
 
-    /// <summary>Parks the row without completing it: the delivery is Unknown and the reconciler owns it now.</summary>
-    public void AwaitReconciliation(DateTimeOffset availableAt, string? error)
+    /// <summary>
+    /// Parks the row: the delivery is Unknown and only the reconciler may touch it.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <see cref="Defer"/>. A deferred row is one we know was never delivered and
+    /// may safely be sent again; this one may already be in somebody's inbox. The status change is
+    /// what removes it from the dispatcher's claim — <c>AvailableAt</c> alone never could, because
+    /// waiting is exactly what makes a deferred row eligible again.
+    /// </remarks>
+    public void AwaitReconciliation(DateTimeOffset reconcileAt, string? error)
     {
-        Defer(availableAt, error);
+        Status = OutboxStatus.AwaitingReconciliation;
+        AvailableAt = reconcileAt;
+        LeaseOwner = null;
+        LeaseExpiresAt = null;
+        LastError = Bounded(error);
     }
+
+    /// <summary>
+    /// Returns a parked row to the queue, once something authoritative has established that the
+    /// provider never took it — or that sending again is safe because it deduplicates.
+    /// </summary>
+    public void ResumeAfterReconciliation(DateTimeOffset availableAt)
+    {
+        Status = OutboxStatus.Pending;
+        AvailableAt = availableAt;
+        LeaseOwner = null;
+        LeaseExpiresAt = null;
+    }
+
+    /// <summary>Takes the row for one worker, so the reconciler and the dispatcher cannot both act.</summary>
+    public void Lease(string owner, DateTimeOffset expiresAt)
+    {
+        LeaseOwner = owner;
+        LeaseExpiresAt = expiresAt;
+    }
+
+    private static string? Bounded(string? error) =>
+        error is null || error.Length <= MaxErrorLength ? error : error[..MaxErrorLength];
 }

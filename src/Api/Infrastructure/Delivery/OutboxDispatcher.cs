@@ -146,12 +146,25 @@ public sealed class OutboxDispatcher(
         }
         catch (Exception exception) when (exception is HttpRequestException or IOException or TaskCanceledException)
         {
-            // A transport failure with no evidence the provider saw anything. Backed off and retried,
-            // which is safe here only because the demo provider honours the stable key.
-            logger.LogWarning(exception, "Delivery {DeliveryId} could not be dispatched.", delivery.Id);
+            // A transport failure after the request went out. Whether the provider saw it is exactly
+            // what we cannot know: a connection dropped mid-flight looks identical whether it broke
+            // before or after the far end read the bytes. Only a provider that deduplicates makes a
+            // resend safe; anything else is parked for the reconciler.
+            if (provider.Capabilities.HonoursStableKey)
+            {
+                logger.LogWarning(exception, "Delivery {DeliveryId} could not be dispatched; the stable key makes a retry safe.", delivery.Id);
 
-            message.Defer(clock.UtcNow + Backoff(message.AttemptCount), exception.Message);
-            activity?.SetTag("assistant.delivery_result", "deferred");
+                message.Defer(clock.UtcNow + Backoff(message.AttemptCount), exception.Message);
+                activity?.SetTag("assistant.delivery_result", "deferred");
+            }
+            else
+            {
+                logger.LogWarning(exception, "Delivery {DeliveryId} was lost in transport and cannot be safely retried.", delivery.Id);
+
+                delivery.Ambiguous(exception.Message);
+                message.AwaitReconciliation(clock.UtcNow + DeliveryReconciler.ReconcileDelay, exception.Message);
+                activity?.SetTag("assistant.delivery_result", "unknown");
+            }
         }
 
         await SettleExecutionAsync(delivery, cancellationToken);

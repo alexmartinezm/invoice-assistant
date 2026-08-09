@@ -248,6 +248,20 @@ public static class InvoiceEndpoints
     /// assistant write <em>is</em> its execution id, so the delivery can be linked back without the
     /// caller having to say so — and a key from curl or the SPA simply matches nothing.
     /// </summary>
+    /// <remarks>
+    /// The match has to be more than "some execution has this id". The header is client-controlled,
+    /// and an execution id is visible to the person who proposed the action even when somebody else
+    /// approved it — so a bare id lookup let one user hand another user's execution an unrelated
+    /// delivery, and with it the closing line on somebody else's conversation. Requiring the caller
+    /// to own the execution, for the right tool, in a state that is actually waiting for this
+    /// request, closes that without needing the client to be trusted about anything.
+    /// <para>
+    /// It is still a match on a value the client sent, and the stronger version would carry the
+    /// execution identity in the internal call itself rather than inferring it from a header. That
+    /// is a change to how <c>SelfApiClient</c> presents itself and is deliberately not made here;
+    /// what the tightened match buys is that the worst a forged key can now do is fail to link.
+    /// </para>
+    /// </remarks>
     private static async Task<Guid?> ExecutionBehindAsync(
         HttpContext http,
         AppDbContext db,
@@ -258,10 +272,21 @@ public static class InvoiceEndpoints
             return null;
         }
 
-        return await db.ActionExecutions.AsNoTracking().AnyAsync(e => e.Id == candidate, cancellationToken)
-            ? candidate
-            : null;
+        var userId = http.User.Id();
+
+        var matches = await db.ActionExecutions.AsNoTracking().AnyAsync(
+            execution => execution.Id == candidate
+                && execution.UserId == userId
+                && execution.ToolName == SendInvoiceTool
+                && execution.Status != ActionExecutionStatus.Succeeded
+                && execution.Status != ActionExecutionStatus.Failed,
+            cancellationToken);
+
+        return matches ? candidate : null;
     }
+
+    /// <summary>The one tool whose execution can be waiting on a delivery from this endpoint.</summary>
+    private const string SendInvoiceTool = "send_invoice";
 
     private static async Task<IResult> MarkPaidAsync(
         string number,

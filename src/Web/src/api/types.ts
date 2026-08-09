@@ -230,6 +230,12 @@ export interface ActionExecutionView {
   errorDetail: string | null;
   deliveryId: string | null;
   deliveryStatus: string | null;
+  /**
+   * The sentence to show for this state. The server writes every one of these, so render it rather
+   * than deriving copy from `status`: a provider that refuses a delivery leaves `status` at
+   * `failed` on an invoice that was issued all the same, and only the server knows that.
+   */
+  message: string | null;
 }
 
 /** A proposal waiting on somebody, as the server describes it to whoever is looking. */

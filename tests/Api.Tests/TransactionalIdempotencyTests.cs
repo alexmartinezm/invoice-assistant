@@ -7,6 +7,7 @@ using Api.Tests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Npgsql;
 
 namespace Api.Tests;
 
@@ -238,6 +239,87 @@ public class TransactionalIdempotencyTests(FaultyApiFactory factory) : IClassFix
         // And the freed key behaves like a new one rather than colliding with a ghost.
         using var reused = await client.PostWriteAsync("/api/invoices", NewInvoice(6m, "Reused key"), stale);
         Assert.Equal(HttpStatusCode.Created, reused.StatusCode);
+    }
+
+    /// <summary>
+    /// Two bodies too large to fingerprint, sharing everything up to the cap. Hashing a prefix would
+    /// make them the same request, and the second would be handed the first one's answer.
+    /// </summary>
+    /// <remarks>
+    /// The refusal is the point, not the status code: an oversized body under an idempotency key has
+    /// no safe reading, because the fingerprint is what distinguishes a retry from a different
+    /// request. The filter used to truncate silently at 256 KiB and carry on.
+    /// </remarks>
+    [Fact]
+    public async Task An_oversized_body_is_refused_rather_than_fingerprinted_by_its_prefix()
+    {
+        using var client = await factory.ClientForAsync("carlos@demo");
+        var key = Guid.CreateVersion7().ToString();
+
+        // Identical for the first 256 KiB, different after it. Under the old truncating read these
+        // hashed the same, and the second call replayed the first's response.
+        var shared = new string('x', TransactionalIdempotencyFilter.MaxBodyBytes);
+
+        using var first = await client.PostWriteAsync(
+            "/api/invoices", NewInvoice(10m, shared + "-first"), key);
+        using var second = await client.PostWriteAsync(
+            "/api/invoices", NewInvoice(9_000m, shared + "-second"), key);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, first.StatusCode);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, second.StatusCode);
+
+        var problem = await second.Content.ReadFromJsonAsync<ProblemPayload>();
+        Assert.Equal("request_body_too_large", problem!.Code);
+
+        // Neither ran, and neither took the key: the refusal happens before the transaction opens.
+        Assert.Null(await FindReceiptAsync(key));
+    }
+
+    /// <summary>
+    /// A handler that cannot get the row it needs. The <c>lock_timeout</c> the filter sets covers the
+    /// handler's statements too, so the refusal surfaces from inside the handler rather than at the
+    /// claim — and it means the same thing there: somebody else is mid-write, come back.
+    /// </summary>
+    /// <remarks>
+    /// Answering 500 would tell a client its request failed, when what happened is that it has not
+    /// been attempted yet. The distinction decides whether retrying is correct.
+    /// </remarks>
+    [Fact]
+    public async Task A_handler_that_cannot_get_its_lock_answers_conflict_rather_than_server_error()
+    {
+        using var client = await factory.ClientForAsync("carlos@demo");
+        var number = await CreateAndSendAsync(unitPrice: 100m);
+
+        // A second connection holding the invoice row, so the handler's UPDATE has to wait for it.
+        // The transaction is never committed: it exists only to be in the way.
+        await using var blocker = new NpgsqlConnection(factory.ConnectionString);
+        await blocker.OpenAsync();
+        await using var holding = await blocker.BeginTransactionAsync();
+
+        await using (var command = blocker.CreateCommand())
+        {
+            command.CommandText = """SELECT 1 FROM invoices WHERE "Number" = @number FOR UPDATE""";
+            command.Parameters.AddWithValue("number", number);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var key = Guid.CreateVersion7().ToString();
+        using var blocked = await client.PostWriteAsync($"/api/invoices/{number}/mark-paid", key: key);
+
+        Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
+        var problem = await blocked.Content.ReadFromJsonAsync<ProblemPayload>();
+        Assert.Equal("request_in_progress", problem!.Code);
+
+        // The key was this caller's alone, so the timeout can only have come from the handler —
+        // which is the case the filter used to answer 500 for.
+        Assert.Contains(
+            factory.Logs.Records,
+            record => record.Contains($"A handler under key {key} timed out", StringComparison.Ordinal));
+
+        await holding.RollbackAsync();
+
+        // Nothing was half-done: the invoice is as it was, and the key the caller used is free.
+        Assert.Equal(InvoiceStatus.Sent, await StatusOfAsync(number));
     }
 
     // --- helpers ---------------------------------------------------------------------------------

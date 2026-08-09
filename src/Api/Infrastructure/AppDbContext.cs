@@ -209,7 +209,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
             message.Property(m => m.Type).HasMaxLength(50);
             message.Property(m => m.ProviderKey).HasMaxLength(100);
-            message.Property(m => m.Status).HasConversion<string>().HasMaxLength(20);
+
+            // 30 rather than the 20 the other status columns use: AwaitingReconciliation is 22
+            // characters, and a status enum stored as text is only readable if the widest name fits.
+            message.Property(m => m.Status).HasConversion<string>().HasMaxLength(30);
             message.Property(m => m.LeaseOwner).HasMaxLength(150);
             message.Property(m => m.LastError).HasMaxLength(OutboxMessage.MaxErrorLength);
             message.Property(m => m.PayloadJson).HasColumnType("json");

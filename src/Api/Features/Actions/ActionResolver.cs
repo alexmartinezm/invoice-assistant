@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Api.Assistant;
 using Api.Domain;
@@ -17,6 +19,13 @@ public enum ClaimFailure
     /// Refused and closed rather than executed on trust.
     /// </summary>
     NotFingerprinted,
+
+    /// <summary>
+    /// The stored fingerprint does not describe the stored command. Something changed the row
+    /// between proposal and approval, so the sentence a person agreed to is no longer the sentence
+    /// that would run.
+    /// </summary>
+    Tampered,
 }
 
 /// <summary>
@@ -90,6 +99,27 @@ public sealed class ActionResolver(AppDbContext db, IClock clock, ILogger<Action
                 ClaimFailure.NotFingerprinted);
         }
 
+        // The fingerprint is only worth carrying if somebody checks it. Recomputing it here is what
+        // turns it from a value copied onto the execution into a precondition of approving at all:
+        // an ArgsJson or ExpectedResourceRevision edited after the proposal was shown no longer
+        // matches, and the approval buys nothing. Constant-time because the comparison is the guard.
+        if (!Matches(CommandHash.Of(action.ToolName, action.ArgsJson, action.ExpectedResourceRevision), action.CommandHash))
+        {
+            logger.LogError(
+                "Pending action {ActionId} does not match its command fingerprint; refusing it.", action.Id);
+
+            await CompareAndSetAsync(
+                action.Id, PendingActionStatus.Rejected, ActionResolutionReason.PolicyDenied,
+                resolvedBy: null, requireOpen: false, cancellationToken);
+
+            activity?.SetTag("assistant.claim", "tampered");
+            return new ActionClaim(
+                Won: false,
+                await ReloadAsync(action.Id, cancellationToken) ?? action,
+                Execution: null,
+                ClaimFailure.Tampered);
+        }
+
         var now = clock.UtcNow;
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
@@ -143,14 +173,24 @@ public sealed class ActionResolver(AppDbContext db, IClock clock, ILogger<Action
     }
 
     /// <summary>
-    /// Closes a proposal without executing it. Used for a rejection and for a policy refusal at
-    /// approval time, which are different reasons for the same absence of a write.
+    /// Closes a proposal without executing it, and records why in the same transaction. Used for a
+    /// rejection and for a policy refusal at approval time, which are different reasons for the same
+    /// absence of a write.
     /// </summary>
+    /// <remarks>
+    /// The audit row commits with the resolution for the same reason the approval path's does: a
+    /// closed proposal whose reason never landed is a decision nobody can account for, and the
+    /// rejection path used to write no audit row at all — the one decision a person makes explicitly
+    /// was the one the ledger did not record.
+    /// </remarks>
     public async Task<ActionClaim> ResolveWithoutExecutingAsync(
         PendingAction action,
-        Guid? resolvedBy,
+        Guid resolvedBy,
         PendingActionStatus status,
         ActionResolutionReason reason,
+        JsonElement args,
+        AuditDecision auditDecision,
+        string auditReason,
         CancellationToken cancellationToken)
     {
         using var activity = AssistantTelemetry.Source.StartActivity("assistant.action.resolve");
@@ -158,17 +198,35 @@ public sealed class ActionResolver(AppDbContext db, IClock clock, ILogger<Action
         activity?.SetTag("assistant.tool", action.ToolName);
         activity?.SetTag("assistant.decision", status.ToString().ToLowerInvariant());
 
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         var claimed = await CompareAndSetAsync(
             action.Id, status, reason, resolvedBy, requireOpen: true, cancellationToken);
 
-        var current = await ReloadAsync(action.Id, cancellationToken) ?? action;
-        activity?.SetTag("assistant.claim", claimed == 1 ? "won" : "lost");
+        if (claimed == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            activity?.SetTag("assistant.claim", "lost");
+
+            return new ActionClaim(
+                Won: false,
+                await ReloadAsync(action.Id, cancellationToken) ?? action,
+                await ExecutionForAsync(action.Id, cancellationToken),
+                ClaimFailure.AlreadyResolved);
+        }
+
+        db.AuditEvents.Add(Audit(
+            resolvedBy, action.ToolName, args, auditDecision, auditReason,
+            action.ConversationId, executionId: null, clock.UtcNow));
+
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        activity?.SetTag("assistant.claim", "won");
+        activity?.SetTag("assistant.actor_id", resolvedBy);
 
         return new ActionClaim(
-            claimed == 1,
-            current,
-            claimed == 1 ? null : await ExecutionForAsync(action.Id, cancellationToken),
-            claimed == 1 ? null : ClaimFailure.AlreadyResolved);
+            Won: true, await ReloadAsync(action.Id, cancellationToken) ?? action, Execution: null, Failure: null);
     }
 
     /// <summary>
@@ -238,6 +296,15 @@ public sealed class ActionResolver(AppDbContext db, IClock clock, ILogger<Action
                 .SetProperty(a => a.ResolvedAt, (DateTimeOffset?)now),
             cancellationToken);
     }
+
+    /// <summary>
+    /// Compares two fingerprints without leaking, through timing, how much of one is right. Length
+    /// differences answer false rather than throwing, which is what a hash from an older algorithm
+    /// looks like.
+    /// </summary>
+    private static bool Matches(string expected, string stored) =>
+        CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(stored));
 
     private Task<PendingAction?> ReloadAsync(Guid actionId, CancellationToken cancellationToken) =>
         db.PendingActions.AsNoTracking().SingleOrDefaultAsync(a => a.Id == actionId, cancellationToken);

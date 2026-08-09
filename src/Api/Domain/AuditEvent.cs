@@ -23,6 +23,14 @@ public enum AuditDecision
 
     /// <summary>A per-turn or per-conversation limit stopped it; nothing executed.</summary>
     Blocked,
+
+    /// <summary>
+    /// A human declined a <c>PendingAction</c>; nothing executed. Distinct from
+    /// <see cref="Denied"/> for the same reason <see cref="Confirmed"/> is distinct from
+    /// <see cref="Auto"/> — "a person said no" and "a rule said no" are different answers to
+    /// "why did this not happen?", and only one of them is a decision somebody can be asked about.
+    /// </summary>
+    Rejected,
 }
 
 /// <summary>

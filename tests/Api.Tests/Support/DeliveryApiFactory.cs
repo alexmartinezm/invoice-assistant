@@ -27,7 +27,13 @@ public sealed class DeliveryApiFactory : ApiFactory
 {
     public ScriptedFaults Faults { get; } = new();
 
-    public DemoInvoiceDeliveryProvider Provider { get; private set; } = null!;
+    /// <summary>
+    /// The singleton the application itself uses. Resolved on first touch rather than in the
+    /// constructor: reaching for it earlier would build the container during configuration, which
+    /// is how a factory ends up with two of everything.
+    /// </summary>
+    public DemoInvoiceDeliveryProvider Provider =>
+        (DemoInvoiceDeliveryProvider)Services.GetRequiredService<IInvoiceDeliveryProvider>();
 
     /// <summary>Dispatch and reconcile, as the worker would do them in one tick.</summary>
     public async Task RunOutboxAsync()
@@ -48,6 +54,29 @@ public sealed class DeliveryApiFactory : ApiFactory
         await scope.ServiceProvider.GetRequiredService<DeliveryReconciler>().ReconcileAsync(CancellationToken.None);
     }
 
+    /// <summary>The pass that finishes executions whose caller never came back.</summary>
+    public async Task<int> RunExecutionReconcileAsync()
+    {
+        using var scope = Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<ExecutionReconciler>().ReconcileAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Runs the block against a provider with different capabilities, and restores them after.
+    /// </summary>
+    /// <remarks>
+    /// The capabilities decide what the outbox is allowed to do after an ambiguous answer, so a test
+    /// that cannot vary them can only ever exercise the branch the demo provider happens to be on —
+    /// which is how "resend after ambiguity" stayed unconditional for as long as it did.
+    /// </remarks>
+    public IDisposable ProviderThat(bool honoursStableKey, bool supportsReceiptLookup)
+    {
+        var original = Provider.Capabilities;
+        Provider.Capabilities = new ProviderCapabilities(honoursStableKey, supportsReceiptLookup);
+
+        return new Restore(() => Provider.Capabilities = original);
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
@@ -62,12 +91,8 @@ public sealed class DeliveryApiFactory : ApiFactory
         });
     }
 
-    protected override void ConfigureClient(HttpClient client)
+    private sealed class Restore(Action undo) : IDisposable
     {
-        base.ConfigureClient(client);
-
-        // Resolved once the host exists. Reaching for it earlier would build the container during
-        // configuration, which is how a factory ends up with two of everything.
-        Provider = (DemoInvoiceDeliveryProvider)Services.GetRequiredService<IInvoiceDeliveryProvider>();
+        public void Dispose() => undo();
     }
 }

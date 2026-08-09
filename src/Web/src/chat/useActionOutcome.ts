@@ -19,6 +19,11 @@ const unsettled: ReadonlySet<ExecutionStatus> = new Set(['pending', 'executing',
  * a write that hands off to a delivery settles minutes later — so a card that showed the first
  * answer and stopped would be showing a guess. Every sentence it displays is the server's; this
  * hook decides when to ask again, never what to say.
+ *
+ * That last part used to be aspirational: the closing line for an execution that settled while the
+ * card was watching was rebuilt here from the status, which meant the client was quietly asserting
+ * "nothing changed" for a delivery the provider refused after the invoice had been issued. The
+ * execution now carries the server's sentence, and this renders it.
  */
 export function useActionOutcome(token: string) {
   const timers = useRef(new Map<string, number>());
@@ -60,7 +65,7 @@ export function useActionOutcome(token: string) {
           if (!unsettled.has(execution.status)) {
             onState({
               status: 'resolved',
-              message: settledMessage(outcome, execution.status),
+              message: execution.message ?? outcome.message,
               failed: execution.status === 'failed',
             });
             timers.current.delete(actionId);
@@ -72,7 +77,7 @@ export function useActionOutcome(token: string) {
             status: 'running',
             executionId,
             execution: execution.status,
-            message: outcome.message,
+            message: execution.message ?? outcome.message,
           });
         } catch (cause) {
           // A 404 means it is not ours to watch; anything else may well succeed next time. Neither
@@ -120,21 +125,4 @@ export function toState(outcome: ActionOutcome): ApprovalState {
     execution: outcome.executionStatus ?? 'executing',
     message: outcome.message,
   };
-}
-
-/**
- * The closing sentence for an execution that settled while the card was watching.
- *
- * The server wrote the summary and the server decided the outcome; this only joins the two, because
- * re-fetching the whole action to get one sentence would be a request for something the client can
- * already say correctly.
- */
-function settledMessage(outcome: ActionOutcome, status: ExecutionStatus): string {
-  return status === 'succeeded'
-    ? `Done: ${lowerFirst(outcome.summary)}.`
-    : `${outcome.summary} — approved, but it did not go through. Nothing changed.`;
-}
-
-function lowerFirst(value: string): string {
-  return value.charAt(0).toLowerCase() + value.slice(1);
 }

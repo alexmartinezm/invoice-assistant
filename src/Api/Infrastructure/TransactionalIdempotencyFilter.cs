@@ -48,7 +48,10 @@ public sealed class TransactionalIdempotencyFilter(
     /// </summary>
     public const string LockTimeout = "3000ms";
 
-    /// <summary>Bounds the body read, so the hash cannot be made expensive by the caller.</summary>
+    /// <summary>
+    /// Bounds the body read, so the hash cannot be made expensive by the caller. A body over this is
+    /// refused rather than fingerprinted, because a fingerprint of a prefix is not a fingerprint.
+    /// </summary>
     public const int MaxBodyBytes = 256 * 1024;
 
     /// <summary>Matches the column, and is generous for a UUID or a client-generated token.</summary>
@@ -86,7 +89,19 @@ public sealed class TransactionalIdempotencyFilter(
 
         var userId = http.User.Id();
         var operation = $"{http.Request.Method} {http.Request.Path}";
-        var requestHash = await HashRequestAsync(http, cancellationToken);
+
+        if (await HashRequestAsync(http, cancellationToken) is not { } requestHash)
+        {
+            // Refused rather than hashed short. Two bodies sharing a 256 KiB prefix would otherwise
+            // produce the same fingerprint, and the second would be replayed the first one's answer —
+            // a silent wrong result, which is worse than the loud one the caller gets here.
+            return Problem(
+                "Request body too large",
+                $"A request carrying an Idempotency-Key may have a body of at most {MaxBodyBytes} bytes, "
+                + "so its fingerprint covers all of it.",
+                StatusCodes.Status413PayloadTooLarge,
+                "request_body_too_large");
+        }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
@@ -118,6 +133,16 @@ public sealed class TransactionalIdempotencyFilter(
         try
         {
             result = await next(context);
+        }
+        catch (Exception exception) when (IsLockTimeout(exception))
+        {
+            // The lock_timeout set above covers the handler's statements too, so a row another
+            // request is holding surfaces here rather than at the claim. It is the same situation
+            // the claim's own catch reports — someone else is mid-write — and answering 409 says so,
+            // where letting it escape would answer 500 and invite a retry that repeats the wait.
+            await transaction.RollbackAsync(CancellationToken.None);
+            logger.LogWarning(exception, "A handler under key {Key} timed out waiting for a lock.", key);
+            return InProgress(key);
         }
         catch
         {
@@ -152,6 +177,16 @@ public sealed class TransactionalIdempotencyFilter(
 
         return result;
     }
+
+    /// <summary>
+    /// Whether this is Postgres refusing to keep waiting for a lock, at whatever depth EF wrapped it.
+    /// </summary>
+    private static bool IsLockTimeout(Exception exception) => exception switch
+    {
+        PostgresException postgres => postgres.SqlState is LockNotAvailable,
+        { InnerException: { } inner } => IsLockTimeout(inner),
+        _ => false,
+    };
 
     /// <summary>
     /// Takes the key, or discovers somebody else has it. <c>ON CONFLICT DO NOTHING</c> rather than a
@@ -267,9 +302,13 @@ public sealed class TransactionalIdempotencyFilter(
     /// stored: what identifies the request is who sent it plus what they asked for, and the scope
     /// already carries the who.
     /// </summary>
-    private static async Task<string> HashRequestAsync(HttpContext http, CancellationToken cancellationToken)
+    /// <returns>The fingerprint, or <see langword="null"/> if the body is over <see cref="MaxBodyBytes"/>.</returns>
+    private static async Task<string?> HashRequestAsync(HttpContext http, CancellationToken cancellationToken)
     {
-        var body = await ReadBodyAsync(http.Request, cancellationToken);
+        if (await ReadBodyAsync(http.Request, cancellationToken) is not { } body)
+        {
+            return null;
+        }
 
         var payload = new StringBuilder()
             .Append(http.Request.Method).Append('\n')
@@ -291,11 +330,17 @@ public sealed class TransactionalIdempotencyFilter(
     /// would silently degrade into a check on the URL alone. That is worth failing loudly over
     /// rather than approximating.
     /// </remarks>
-    private static async Task<byte[]> ReadBodyAsync(HttpRequest request, CancellationToken cancellationToken)
+    /// <returns>The body, or <see langword="null"/> if it is over <see cref="MaxBodyBytes"/>.</returns>
+    private static async Task<byte[]?> ReadBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         if (request.ContentLength is 0)
         {
             return [];
+        }
+
+        if (request.ContentLength > MaxBodyBytes)
+        {
+            return null;
         }
 
         if (!request.Body.CanSeek)
@@ -307,14 +352,27 @@ public sealed class TransactionalIdempotencyFilter(
 
         request.Body.Position = 0;
 
-        using var buffer = new MemoryStream();
-        await request.Body.CopyToAsync(buffer, cancellationToken);
+        // One byte past the cap: enough to tell a body at the limit from one over it, and never more
+        // than that, so the read is bounded during the copy rather than trimmed after it. Hashing a
+        // prefix would make two different requests indistinguishable, so over the cap returns null
+        // and the caller is refused.
+        var buffer = new byte[MaxBodyBytes + 1];
+        var read = 0;
+
+        while (read < buffer.Length)
+        {
+            var chunk = await request.Body.ReadAsync(buffer.AsMemory(read), cancellationToken);
+            if (chunk == 0)
+            {
+                break;
+            }
+
+            read += chunk;
+        }
+
         request.Body.Position = 0;
 
-        // Bounded so a large body cannot make the hash the expensive part of the request. The model
-        // binder refuses anything near this size anyway; the cap is here so the filter does not read
-        // it into memory first.
-        return buffer.Length > MaxBodyBytes ? buffer.GetBuffer()[..MaxBodyBytes] : buffer.ToArray();
+        return read > MaxBodyBytes ? null : buffer[..read];
     }
 
     private static IResult InProgress(string key)

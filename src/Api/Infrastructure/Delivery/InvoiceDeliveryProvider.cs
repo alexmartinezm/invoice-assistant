@@ -72,9 +72,13 @@ public sealed class AmbiguousDeliveryException(string reason, Exception? inner =
 /// provider's history would be unreachable if it went away.
 /// </para>
 /// <para>
-/// It honours the stable key — a second send with the same key returns the first receipt rather than
-/// delivering again — which is the capability that makes reconciliation after a lost response
-/// produce one message instead of two.
+/// By default it honours the stable key — a second send with the same key returns the first receipt
+/// rather than delivering again — which is the capability that makes reconciliation after a lost
+/// response produce one message instead of two. <see cref="Capabilities"/> is settable, and the
+/// behaviour follows it: a provider that says it does not deduplicate really does mint a second
+/// message, and one that says it cannot answer a lookup really does refuse to. A stand-in whose
+/// behaviour is better than its declared capabilities makes the code that consults them untestable,
+/// which is how the outbox came to treat every provider as if it deduplicated.
 /// </para>
 /// </remarks>
 public sealed class DemoInvoiceDeliveryProvider(IClock clock, IFaultInjector faults, ILogger<DemoInvoiceDeliveryProvider> logger)
@@ -82,10 +86,16 @@ public sealed class DemoInvoiceDeliveryProvider(IClock clock, IFaultInjector fau
 {
     private readonly ConcurrentDictionary<string, DeliveryReceipt> _receipts = new();
     private readonly ConcurrentDictionary<string, int> _requests = new();
+    private readonly ConcurrentDictionary<string, int> _messages = new();
+    private readonly Lock _gate = new();
 
-    public ProviderCapabilities Capabilities { get; } = new(HonoursStableKey: true, SupportsReceiptLookup: true);
+    /// <summary>
+    /// What this stand-in claims to be able to do. Settable so a test can be a provider the outbox
+    /// must handle differently; the default is the capable one the demo runs against.
+    /// </summary>
+    public ProviderCapabilities Capabilities { get; set; } = new(HonoursStableKey: true, SupportsReceiptLookup: true);
 
-    /// <summary>Everything this provider has ever accepted, by stable key. One entry, one message.</summary>
+    /// <summary>Everything this provider has ever accepted, by stable key.</summary>
     public IReadOnlyDictionary<string, DeliveryReceipt> Receipts => _receipts;
 
     /// <summary>
@@ -97,6 +107,9 @@ public sealed class DemoInvoiceDeliveryProvider(IClock clock, IFaultInjector fau
     /// distinguishes "we were careful" from "we were lucky".
     /// </remarks>
     public int RequestsFor(string providerKey) => _requests.GetValueOrDefault(providerKey);
+
+    /// <summary>How many messages a key actually produced — the number the customer would count.</summary>
+    public int MessagesFor(string providerKey) => _messages.GetValueOrDefault(providerKey);
 
     public Task<DeliveryReceipt> SendAsync(
         string providerKey,
@@ -112,11 +125,25 @@ public sealed class DemoInvoiceDeliveryProvider(IClock clock, IFaultInjector fau
                 "no_recipient", $"{payload.CustomerName} has no deliverable email address.");
         }
 
-        // Deduplicated on the client's key, which is what "honours the stable key" means. A retry
-        // after a lost answer lands here and gets the original receipt back.
-        var receipt = _receipts.GetOrAdd(
-            providerKey,
-            _ => new DeliveryReceipt($"demo-{Guid.CreateVersion7():N}", clock.UtcNow));
+        DeliveryReceipt receipt;
+
+        lock (_gate)
+        {
+            // Deduplicated on the client's key, which is what "honours the stable key" means: a
+            // retry after a lost answer lands here and gets the original receipt back. Without that
+            // capability every send is a new message — the duplicate the system exists to avoid,
+            // and the only way to prove it avoids it.
+            if (Capabilities.HonoursStableKey && _receipts.TryGetValue(providerKey, out var stored))
+            {
+                receipt = stored;
+            }
+            else
+            {
+                receipt = new DeliveryReceipt($"demo-{Guid.CreateVersion7():N}", clock.UtcNow);
+                _receipts[providerKey] = receipt;
+                _messages.AddOrUpdate(providerKey, 1, (_, count) => count + 1);
+            }
+        }
 
         logger.LogInformation(
             "Demo provider accepted {InvoiceNumber} as {MessageId}", payload.InvoiceNumber, receipt.ProviderMessageId);
@@ -135,6 +162,16 @@ public sealed class DemoInvoiceDeliveryProvider(IClock clock, IFaultInjector fau
         return Task.FromResult(receipt);
     }
 
-    public Task<DeliveryReceipt?> FindReceiptAsync(string providerKey, CancellationToken cancellationToken) =>
-        Task.FromResult(_receipts.GetValueOrDefault(providerKey));
+    public Task<DeliveryReceipt?> FindReceiptAsync(string providerKey, CancellationToken cancellationToken)
+    {
+        if (!Capabilities.SupportsReceiptLookup)
+        {
+            // Answering null would be indistinguishable from "I never received it", and a caller
+            // acting on that would resend. A provider that cannot answer must not appear to — so
+            // asking one is a bug that fails here rather than a duplicate that ships.
+            throw new NotSupportedException("This provider cannot look up receipts by key.");
+        }
+
+        return Task.FromResult(_receipts.GetValueOrDefault(providerKey));
+    }
 }

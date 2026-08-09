@@ -89,6 +89,15 @@ public sealed class InvoiceDelivery
         LastError = Truncate(error);
     }
 
+    /// <summary>
+    /// The provider has told us, authoritatively, that it never received this — so the ambiguity is
+    /// resolved in the one direction that makes sending again correct rather than duplicating.
+    /// </summary>
+    public void Requeued()
+    {
+        Status = InvoiceDeliveryStatus.Queued;
+    }
+
     private static string? Truncate(string? error) =>
         error is null || error.Length <= MaxErrorLength ? error : error[..MaxErrorLength];
 }

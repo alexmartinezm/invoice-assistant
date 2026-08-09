@@ -87,6 +87,18 @@ public sealed class ActionExecution
     /// <summary>When a reconciler should look at this again. Null while nothing is owed.</summary>
     public DateTimeOffset? NextAttemptAt { get; private set; }
 
+    /// <summary>
+    /// When the in-flight attempt stops being anybody's.
+    /// </summary>
+    /// <remarks>
+    /// Without this, <see cref="ActionExecutionStatus.Executing"/> was a trap: the claim moved the row
+    /// there and nothing could ever move it back, so a process that died mid-request left the
+    /// execution — and the card watching it — stuck on "executing" for ever. A lease makes the state
+    /// reclaimable. Reclaiming is safe precisely because the retry carries the same
+    /// <see cref="IdempotencyKey"/>: the receipt decides whether it is a resume or a replay.
+    /// </remarks>
+    public DateTimeOffset? AttemptExpiresAt { get; private set; }
+
     public int? ResultStatusCode { get; private set; }
 
     /// <summary>The settled response, stored so a resumed approval replays it instead of re-running.</summary>
@@ -127,6 +139,7 @@ public sealed class ActionExecution
         ErrorCode = null;
         ErrorDetail = null;
         NextAttemptAt = null;
+        AttemptExpiresAt = null;
         CompletedAt = now;
     }
 
@@ -143,6 +156,7 @@ public sealed class ActionExecution
         ErrorCode = errorCode;
         ErrorDetail = Truncate(detail);
         NextAttemptAt = null;
+        AttemptExpiresAt = null;
         CompletedAt = now;
     }
 
@@ -159,6 +173,7 @@ public sealed class ActionExecution
         ErrorCode = errorCode;
         ErrorDetail = Truncate(detail);
         NextAttemptAt = reconcileAt;
+        AttemptExpiresAt = null;
     }
 
     /// <summary>
@@ -175,6 +190,10 @@ public sealed class ActionExecution
         ResultStatusCode = statusCode;
         ResultJson = resultJson;
         LastAttemptAt = now;
+
+        // The HTTP attempt is over; what the execution waits on now is the outbox. Clearing the
+        // lease stops a reclaim treating a perfectly healthy queued delivery as an abandoned request.
+        AttemptExpiresAt = null;
     }
 
     public void RecordProviderMessage(string providerMessageId) => ProviderMessageId = providerMessageId;

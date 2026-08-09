@@ -157,7 +157,11 @@ public class WriteGateTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(InvoiceStatus.Sent, await StatusOfAsync(number));
-        Assert.Empty(await AuditFor(conversationId));
+
+        // A decision a person made explicitly is a decision the ledger has to hold. This used to
+        // assert the opposite — that rejecting wrote nothing — which made "nobody approved this"
+        // answerable and "somebody refused this" not.
+        Assert.Equal([AuditDecision.Rejected], await AuditFor(conversationId));
 
         var pending = Assert.Single(await PendingFor(conversationId));
         Assert.Equal(PendingActionStatus.Rejected, pending.Status);

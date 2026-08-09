@@ -53,15 +53,31 @@ Five rules follow, and are decided here rather than left implicit:
    hard constraint: **no handler under that filter may call an external service.** External work is
    an outbox row, committed with the effect and dispatched afterwards.
 
-4. **A stale approval fails closed.** The proposal captures the target's `Invoice.Revision`; the
-   approval sends it as `If-Match`; a mismatch is `412 resource_changed` and the server does *not*
-   refresh and execute against state the user never saw. The command hash covers tool, argument
-   bytes and revision precisely so that a changed invoice is a different command.
+4. **A stale approval fails closed, and so does an altered one.** The proposal captures the target's
+   `Invoice.Revision`; the approval sends it as `If-Match`; a mismatch is `412 resource_changed` and
+   the server does *not* refresh and execute against state the user never saw. The command hash
+   covers tool, argument bytes and revision precisely so that a changed invoice is a different
+   command — and it is **recomputed and compared at approval time**, not merely carried forward. A
+   fingerprint nobody verifies records the tampering rather than preventing it.
 
 5. **`Unknown` is a state, and it is not `Failed`.** A request that crossed a non-transactional
    boundary without an answer is recorded as `Unknown`, reconciled from an authoritative receipt,
    and never blindly resent. `AuditDecision` stays an authorization vocabulary: an approved write
-   the API refuses is `Confirmed` plus a failed execution.
+   the API refuses is `Confirmed` plus a failed execution. A human refusal is `Rejected`, which is a
+   different fact from policy's `Denied` — one of them is a decision somebody can be asked about.
+
+6. **Every in-flight state has an owner and a way out.** An attempt holds a lease; when it lapses
+   the execution is reclaimable *under the same idempotency key*, so a resume is a replay rather
+   than a second write. A background pass settles what the evidence allows and releases what it
+   cannot, and **it never re-executes**: it holds no bearer token and must not acquire one. Where no
+   evidence exists the execution stays unsettled and a person decides, which is the honest outcome
+   rather than a gap.
+
+   The same rule binds the outbox. An ambiguous send is parked in its own status, out of the
+   dispatcher's reach, and what may happen next is read from the provider's declared capabilities:
+   ask when it can answer, resend only when it deduplicates, and otherwise wait for a person. A
+   worker that defers an ambiguous send back to the queue is one that sends a second email on the
+   strength of a shrug.
 
 ### What this is not
 
@@ -84,7 +100,13 @@ deliberately asked for.
   no longer doubles as a claim that the customer received it, and the UI shows the two separately.
 - Approving no longer means "done". The approval card shows execution state — *executing*,
   *completed*, *failed*, *outcome unknown* — written by the server, with no extra model call to
-  narrate it (ADR 007's third point, unchanged and now load-bearing).
+  narrate it (ADR 007's third point, unchanged and now load-bearing). The sentence travels **with**
+  the execution, so a polling client renders the server's words rather than deriving copy from a
+  status: `failed` on a refused delivery sits on an invoice that was issued, and only the server
+  knows to say so.
+- A body too large to fingerprint is refused with `413` rather than hashed by its prefix. Two
+  requests that agree for 256 KiB are not the same request, and replaying one as the other would be
+  a wrong answer that looks exactly like a right one.
 - ADR 002 is untouched: tools still call our own REST API over HTTP with the caller's bearer token.
   Bridging the transaction boundary that creates is exactly what the stable key plus the
   transactional receipt is for. No token, refresh token or provider secret is ever persisted, so
