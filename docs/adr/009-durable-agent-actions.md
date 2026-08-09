@@ -9,7 +9,7 @@ policy under the approver's identity, calls the business API with that identity 
 decision. What it has never had is an answer for the window *after* a decision and *before* the
 effect is known.
 
-Four concrete holes, all reachable in the F2/F4 code:
+Four concrete holes, all reachable in the shipped code:
 
 1. `PendingAction.TryApprove` mutated a tracked entity. Two requests could both read `Pending`
    before either `SaveChanges` became visible, so "single use" was timing rather than a constraint.

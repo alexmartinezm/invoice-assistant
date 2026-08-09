@@ -149,13 +149,13 @@ somewhere — a console exporter, or any OTLP collector — plus what the spans 
 
 ## Roadmap
 
-- **F1 · Skeleton + reads** ✅ — domain with enforced transitions, seed, JWT auth, business
+- **Skeleton + reads** ✅ — domain with enforced transitions, seed, JWT auth, business
   endpoints, SSE chat with read tools and propagated identity, invoices + chat UI.
-- **F2 · Write gate** ✅ — ToolPolicyEngine over `policies.json`, five gated write tools,
+- **Write gate** ✅ — ToolPolicyEngine over `policies.json`, five gated write tools,
   PendingAction with approve/reject, AuditEvent, idempotency and per-turn limits.
-- **F3 · Evals + CI** ✅ — xUnit harness against a real model, 36 fact-based cases, CI job with
+- **Evals + CI** ✅ — xUnit harness against a real model, 36 fact-based cases, CI job with
   per-run token budget and markdown report; a one-line prompt regression turns the pipeline red.
-- **F4 · Cost, traces and polish** ✅ — UsageCollector metering every model call, global daily spend
+- **Cost, traces and polish** ✅ — UsageCollector metering every model call, global daily spend
   kill switch, Usage page with per-conversation cost timelines, OpenTelemetry traces and metrics,
   single-container Docker build.
 - **Durable agent actions** ✅ — decision, execution and delivery as three linked records;
@@ -188,7 +188,7 @@ no provider key except step 1, which needs the assistant.
 What the demo is designed to make obvious is that "approved" and "done" are different words, and
 that a system which cannot tell you which one it means is a system guessing about your money.
 
-Roles are visible in the chat from F2 on. A Viewer's write is refused outright by policy; an
+Roles are visible in the chat. A Viewer's write is refused outright by policy; an
 Accountant settles small invoices without being asked, is asked to confirm larger ones, and is
 refused by the API above a configurable ceiling (€1,000 by default) even after a human approves —
 the three bands are tabulated in [`docs/architecture.md`](docs/architecture.md).

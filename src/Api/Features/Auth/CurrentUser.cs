@@ -5,7 +5,7 @@ namespace Api.Features.Auth;
 
 /// <summary>
 /// Reads the caller's identity from the validated JWT. Everything downstream — endpoints, tools,
-/// and the policy engine in F2 — takes the role from here, never from anything the model said.
+/// and the policy engine — takes the role from here, never from anything the model said.
 /// </summary>
 public static class CurrentUser
 {

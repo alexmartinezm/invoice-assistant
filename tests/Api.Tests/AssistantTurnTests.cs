@@ -75,7 +75,7 @@ public class AssistantTurnTests(ApiFactory factory) : IClassFixture<ApiFactory>
     /// wording of the prompt.
     /// </summary>
     /// <remarks>
-    /// Until F2 this asserted that every tool was a read. Now that writes exist the boundary is
+    /// This once asserted that every tool was a read. Now that writes exist the boundary is
     /// stated as what is still missing: nothing deletes, nothing acts on more than one named
     /// invoice, and nothing touches users, roles or configuration. Those are the capabilities a
     /// prompt injection would need, and they are absent from the catalog rather than discouraged.

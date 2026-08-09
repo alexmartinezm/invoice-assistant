@@ -8,7 +8,7 @@ namespace Api.Assistant.Tools;
 /// asked to do. The first line of defence is the size of this list, not the wording of the prompt.
 /// </summary>
 /// <remarks>
-/// The write tools are here from F2 onwards, which does not widen that boundary — every one of them
+/// The write tools are here too, which does not widen that boundary — every one of them
 /// runs through <see cref="ToolGate"/>, and each affects exactly one invoice that the caller names.
 /// </remarks>
 public sealed class ToolCatalog

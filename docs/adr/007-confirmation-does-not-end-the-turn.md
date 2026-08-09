@@ -4,7 +4,7 @@
 
 ## Context
 
-ADR 001 says a `require_confirmation` decision "creates a `PendingAction` … and ends the turn". Implementing F2 showed that sentence describes an orchestration this codebase does not have.
+ADR 001 says a `require_confirmation` decision "creates a `PendingAction` … and ends the turn". Implementing the write gate showed that sentence describes an orchestration this codebase does not have.
 
 Tool calls are executed by `Microsoft.Extensions.AI`'s `FunctionInvokingChatClient`, which owns the loop: it invokes the function, appends the result to the conversation and goes straight back to the model. `ChatOrchestrator` only *observes* `FunctionCallContent` and `FunctionResultContent` as they stream past. There is no seam where the orchestrator can decide "stop here" without either replacing that middleware or throwing out of a tool — and a tool that throws reaches the model as a failure, which is the opposite of what a proposal means.
 

@@ -4,7 +4,7 @@
 
 ## Context
 
-F4 has to answer two questions with the same data. *What did this conversation cost?* — the number
+Cost accounting has to answer two questions with the same data. *What did this conversation cost?* — the number
 the Usage page shows, and the reason anyone believes the "<1€/day" claim. And *may this call
 happen at all?* — the kill switch that makes a public demo safe to leave running with a real key in
 it.

@@ -7,7 +7,7 @@ using Microsoft.Extensions.AI;
 namespace Api.Tests;
 
 /// <summary>
-/// The spend kill switch (F4). Each test boots its own app with its own budget, because the
+/// The spend kill switch. Each test boots its own app with its own budget, because the
 /// budget is global by design — sharing a database would let one test's spend trip another's cap.
 /// </summary>
 public class DailyBudgetTests

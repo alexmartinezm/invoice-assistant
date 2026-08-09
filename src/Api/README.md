@@ -7,7 +7,7 @@ Api/
 ├── Program.cs          # the whole composition, top to bottom
 ├── Domain/             # entities and their invariants: transitions and money live here
 ├── Features/           # vertical slices: Auth/, Customers/, Invoices/, Reports/
-├── Assistant/          # ChatOrchestrator, Tools/, ChatEndpoints  (+ ToolPolicyEngine in F2)
+├── Assistant/          # ChatOrchestrator, Tools/, ChatEndpoints, ToolPolicyEngine
 └── Infrastructure/     # EF Core, migrations, seed, telemetry, configuration
 ```
 

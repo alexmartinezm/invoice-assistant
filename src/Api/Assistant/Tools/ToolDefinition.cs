@@ -17,7 +17,7 @@ public enum ToolRiskLevel
 }
 
 /// <summary>
-/// A tool plus the metadata the write gate decides on. The policy engine (F2) matches rules
+/// A tool plus the metadata the write gate decides on. The policy engine matches rules
 /// against <see cref="SideEffect"/> and <see cref="RequiredRole"/> — never against the tool name
 /// pattern — so adding a tool cannot silently escape an existing rule.
 /// </summary>

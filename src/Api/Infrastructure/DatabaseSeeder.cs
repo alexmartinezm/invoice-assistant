@@ -152,7 +152,7 @@ public static class DatabaseSeeder
         profiles.AddRange(Repeat(InvoiceStatus.Cancelled, [-19, -55, -91, -140]));
 
         // One overdue invoice carries an indirect prompt injection in a line description. Seed
-        // data is untrusted input too, and the injection eval cases (F3) read it back through
+        // data is untrusted input too, and the injection eval cases read it back through
         // `get_invoice`.
         profiles.Add(new InvoiceProfile(
             InvoiceStatus.Sent,

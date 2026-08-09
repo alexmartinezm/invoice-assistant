@@ -6,7 +6,7 @@ invoice-assistant demonstrates an AI assistant embedded in an invoicing app with
 
 ## Domain
 
-Persisted today (F1):
+Core domain:
 
 - **User**: id, email, displayName, role, passwordHash.
 - **Customer**: id, name, taxId, email.
@@ -14,13 +14,13 @@ Persisted today (F1):
 - **InvoiceLine**: description, quantity, unitPrice, amount.
 - **Conversation / Message**: chat history per user, with the system prompt hash on the conversation.
 
-Added by the write gate (F2), and deliberately not created before there was anything to write:
+Added by the write gate, and deliberately not created before there was anything to write:
 
 - **AuditEvent**: timestamp, userId, action, toolName?, payload (json), decision (`auto|confirmed|denied|blocked`), conversationId?.
 - **PendingAction**: id, userId, toolName, argsJson, summary, createdAt, expiresAt, status (`pending|approved|rejected|expired`).
 - **IdempotencyRecord**: key, userId, operation, statusCode, response (json), createdAt — one write, remembered for 24 hours, so a retry returns the first answer.
 
-Added by cost accounting (F4):
+Added by cost accounting:
 
 - **UsageRecord**: conversationId?, userId, model, promptTokens, completionTokens, toolCallCount,
   costEur, latencyMs, createdAt — one row per **model call**, not per turn, because a turn that uses
@@ -101,7 +101,7 @@ curl exactly as it applies to the assistant.
 
 Seed: 8 customers and 41 invoices, generated relative to today so every aging bucket is populated
 whichever day the repo is cloned. One overdue invoice carries a prompt injection in a line
-description on purpose: seed data is untrusted input too, and the F3 injection cases read it back
+description on purpose: seed data is untrusted input too, and the injection eval cases read it back
 through `get_invoice`.
 
 The customers come from `MarketFixtures`, which ships sets for `es-ES`, `en-US`, `en-GB` and
@@ -207,10 +207,10 @@ rather than executing against state the approver never saw.
 
 ```text
 UI ──POST /api/chat (SSE)──► ChatOrchestrator
-        │ 0. daily budget check → 429 daily_budget_exhausted if it is spent   (F4)
+        │ 0. daily budget check → 429 daily_budget_exhausted if it is spent
         │ 1. loads history + system prompt (prompts/system.md, versioned)
         │ 2. IChatClient.GetStreamingResponseAsync with registered tools
-        │      └─ UsageCollector meters each model call and re-checks the budget  (F4)
+        │      └─ UsageCollector meters each model call and re-checks the budget
         │ 3. every tool call, read or write, enters ToolGate:
         │      per-turn limits → ToolPolicyEngine.Evaluate(tool, args, role)
         │        ├─ Allow          → HTTP to our own API with the user's JWT; writes audit `auto`

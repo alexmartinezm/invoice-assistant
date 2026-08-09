@@ -6,7 +6,7 @@ namespace Api.Tests.Support;
 /// <summary>
 /// A model whose answers are written in advance. The normal test suite never calls a real
 /// provider: tests have to be free, offline and deterministic. Checks against a real model are
-/// the evals job (F3), which runs separately and on a budget.
+/// the evals job, which runs separately and on a budget.
 /// </summary>
 public sealed class ScriptedChatClient : IChatClient
 {
