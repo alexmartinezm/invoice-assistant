@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Api.Domain;
+using Api.Infrastructure;
 
 namespace Api.Assistant.Tools;
 
@@ -38,7 +39,13 @@ public enum ExecutionVerdict
 /// </remarks>
 public readonly record struct ExecutionOutcome(ExecutionVerdict Verdict, Guid? DeliveryId)
 {
-    public static ExecutionOutcome Classify(int statusCode, JsonElement payload)
+    /// <param name="code">
+    /// The machine-readable error code, when the response carried one. Distinguishes a 409 that is a
+    /// decision (a domain conflict) from one that is a "not yet" — <see cref="TransactionalIdempotencyFilter.RequestInProgressCode"/>
+    /// means a twin under the same key has not finished, and calling that a deterministic refusal
+    /// would settle an execution as <c>Failed</c> for an effect that may still land.
+    /// </param>
+    public static ExecutionOutcome Classify(int statusCode, JsonElement payload, string? code = null)
     {
         if (statusCode is StatusCodes.Status202Accepted && DeliveryIn(payload) is { } deliveryId)
         {
@@ -48,6 +55,16 @@ public readonly record struct ExecutionOutcome(ExecutionVerdict Verdict, Guid? D
         if (statusCode is >= 200 and < 300)
         {
             return new ExecutionOutcome(ExecutionVerdict.Succeeded, null);
+        }
+
+        if (statusCode is StatusCodes.Status409Conflict
+            && code is TransactionalIdempotencyFilter.RequestInProgressCode)
+        {
+            // Not a refusal — a twin request under the same idempotency key had not finished when
+            // this one asked. The effect it is attempting may still land, so the honest reading is
+            // the same one a lost transport answer gets: unresolved, and worth asking about again
+            // rather than declared dead.
+            return new ExecutionOutcome(ExecutionVerdict.Unknown, null);
         }
 
         return statusCode >= StatusCodes.Status500InternalServerError
@@ -66,7 +83,17 @@ public readonly record struct ExecutionOutcome(ExecutionVerdict Verdict, Guid? D
         try
         {
             using var document = JsonDocument.Parse(responseJson);
-            return Classify(statusCode, document.RootElement);
+
+            // A receipt is the raw ProblemDetails object the handler returned, not the wrapper
+            // SelfApiClient builds for a live call — but both carry the code as a top-level "code"
+            // property, which is what lets one reading serve both without a second classifier.
+            var code = document.RootElement.ValueKind is JsonValueKind.Object
+                && document.RootElement.TryGetProperty("code", out var value)
+                && value.ValueKind is JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+            return Classify(statusCode, document.RootElement, code);
         }
         catch (JsonException)
         {

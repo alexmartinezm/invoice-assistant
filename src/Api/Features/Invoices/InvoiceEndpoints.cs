@@ -171,9 +171,15 @@ public static class InvoiceEndpoints
         await db.SaveChangesAsync(cancellationToken);
 
         var created = await FindAsync(db, invoice.Number, tracking: false, cancellationToken);
-        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(created!.Revision);
+        var location = $"/api/invoices/{invoice.Number}";
 
-        return Results.Created($"/api/invoices/{invoice.Number}", created.ToDetail(clock.Today));
+        // Set directly on the response rather than left to Results.Created's own execution, which
+        // runs after the idempotency filter has already captured what it can replay — too late for
+        // a header set only there to be seen. See TransactionalIdempotencyFilter.CaptureReplayableHeaders.
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(created!.Revision);
+        http.Response.Headers.Location = location;
+
+        return Results.Created(location, created.ToDetail(clock.Today));
     }
 
     /// <summary>
@@ -236,11 +242,12 @@ public static class InvoiceEndpoints
 
         await db.SaveChangesAsync(cancellationToken);
 
-        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(invoice.Revision);
+        var location = $"/api/invoices/{invoice.Number}";
 
-        return Results.Accepted(
-            $"/api/invoices/{invoice.Number}",
-            invoice.ToDetail(clock.Today, delivery));
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(invoice.Revision);
+        http.Response.Headers.Location = location;
+
+        return Results.Accepted(location, invoice.ToDetail(clock.Today, delivery));
     }
 
     /// <summary>

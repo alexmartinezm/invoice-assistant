@@ -172,6 +172,20 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             // Also json: this is replayed to a caller verbatim, and "the same answer as last time"
             // should mean the same bytes, not a re-ordered equivalent.
             execution.Property(e => e.ResultJson).HasColumnType("json");
+
+            // Null until a send hands off to the outbox, and never required — most tools have no
+            // delivery to wait on. No navigation either way: this codebase reads these rows by
+            // query, not by walking an object graph, and the constraint is what matters here.
+            execution.HasOne<InvoiceDelivery>()
+                .WithMany()
+                .HasForeignKey(e => e.DeliveryId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // The outbox settling a delivery and a caller's own retry reconciling the same execution
+            // from its receipt are both real, both legitimate, and can land at nearly the same
+            // moment. Postgres's own row version — no extra column, no migration — is what makes the
+            // second writer discover the first one's write instead of quietly overwriting it.
+            execution.Property<uint>("xmin").HasColumnName("xmin").HasColumnType("xid").IsRowVersion();
         });
 
         modelBuilder.Entity<InvoiceDelivery>(delivery =>
@@ -194,6 +208,27 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             delivery.Property(d => d.Status).HasConversion<string>().HasMaxLength(20);
             delivery.Property(d => d.ProviderMessageId).HasMaxLength(200);
             delivery.Property(d => d.LastError).HasMaxLength(InvoiceDelivery.MaxErrorLength);
+
+            // Every delivery belongs to exactly one invoice, and always did — the index on InvoiceId
+            // existed before this constraint did, which is exactly the gap: an index finds rows
+            // fast, it does not stop one pointing nowhere.
+            delivery.HasOne<Invoice>()
+                .WithMany()
+                .HasForeignKey(d => d.InvoiceId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Optional: a delivery triggered outside the assistant (curl, the SPA) has no execution
+            // to answer to.
+            delivery.HasOne<ActionExecution>()
+                .WithMany()
+                .HasForeignKey(d => d.ExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Same reasoning as ActionExecution: the dispatcher and the reconciler each hold this row
+            // under their own lease at different times, and a worker whose lease lapsed but is still
+            // finishing its last write must discover that somebody else already settled the row,
+            // rather than land its answer on top regardless of which arrived first.
+            delivery.Property<uint>("xmin").HasColumnName("xmin").HasColumnType("xid").IsRowVersion();
         });
 
         modelBuilder.Entity<OutboxMessage>(message =>
@@ -207,6 +242,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             message.HasIndex(m => new { m.Status, m.AvailableAt });
             message.HasIndex(m => m.DeliveryId);
 
+            // Every outbox row transports exactly one delivery. Without this a row could point at a
+            // delivery that was never written — the "does not exist" branch DispatchAsync already
+            // has to defend against — rather than that branch being genuinely unreachable from any
+            // write this codebase makes.
+            message.HasOne<InvoiceDelivery>()
+                .WithMany()
+                .HasForeignKey(m => m.DeliveryId)
+                .OnDelete(DeleteBehavior.Restrict);
+
             message.Property(m => m.Type).HasMaxLength(50);
             message.Property(m => m.ProviderKey).HasMaxLength(100);
 
@@ -216,6 +260,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             message.Property(m => m.LeaseOwner).HasMaxLength(150);
             message.Property(m => m.LastError).HasMaxLength(OutboxMessage.MaxErrorLength);
             message.Property(m => m.PayloadJson).HasColumnType("json");
+
+            // The lease says who is supposed to be working on this row; it is not what stops a
+            // worker whose lease already lapsed from finishing a stale write anyway. This is: a
+            // second writer's save fails the moment the row no longer matches what it read.
+            message.Property<uint>("xmin").HasColumnName("xmin").HasColumnType("xid").IsRowVersion();
         });
 
         modelBuilder.Entity<IdempotencyRecord>(record =>
@@ -234,6 +283,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             record.Property(r => r.Operation).HasMaxLength(200);
             record.Property(r => r.RequestHash).HasMaxLength(64).IsFixedLength();
             record.Property(r => r.ResponseJson).HasColumnType("json");
+            record.Property(r => r.ResponseHeadersJson).HasColumnType("json");
         });
 
         modelBuilder.Entity<UsageRecord>(usage =>

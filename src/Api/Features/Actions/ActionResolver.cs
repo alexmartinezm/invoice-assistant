@@ -262,9 +262,14 @@ public sealed class ActionResolver(AppDbContext db, IClock clock, ILogger<Action
         await db.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Tracked, not read-only. Every caller either hands this straight to <c>ActionExecutor</c> to
+    /// possibly settle, or discards it — nothing needs the read-only optimisation, and tracking it is
+    /// what lets a later save on this same context carry the row's original concurrency token instead
+    /// of attaching a detached snapshot and overwriting whatever settled it in the meantime.
+    /// </summary>
     public Task<ActionExecution?> ExecutionForAsync(Guid actionId, CancellationToken cancellationToken) =>
-        db.ActionExecutions.AsNoTracking()
-            .SingleOrDefaultAsync(execution => execution.PendingActionId == actionId, cancellationToken);
+        db.ActionExecutions.SingleOrDefaultAsync(execution => execution.PendingActionId == actionId, cancellationToken);
 
     /// <summary>
     /// The conditional write the whole design rests on. <c>requireOpen</c> is what makes approve,

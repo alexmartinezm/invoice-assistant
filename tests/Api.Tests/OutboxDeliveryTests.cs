@@ -85,6 +85,7 @@ public class OutboxDeliveryTests(DeliveryApiFactory factory) : IClassFixture<Del
         // The provider does have it. That is what makes "it failed" the wrong answer.
         Assert.Contains(afterLoss.ProviderKey, factory.Provider.Receipts.Keys);
 
+        await PassReconcileDelayAsync();
         await factory.RunReconcileAsync();
 
         var reconciled = await DeliveryForAsync(number);
@@ -254,6 +255,7 @@ public class OutboxDeliveryTests(DeliveryApiFactory factory) : IClassFixture<Del
         Assert.DoesNotContain(
             await MessagesForAsync(actionId), message => message.StartsWith("Done:", StringComparison.Ordinal));
 
+        await PassReconcileDelayAsync();
         await factory.RunReconcileAsync();
 
         var settled = await ExecutionAsync(actionId);
@@ -376,6 +378,24 @@ public class OutboxDeliveryTests(DeliveryApiFactory factory) : IClassFixture<Del
         // frozen test clock has none.
         await db.Database.ExecuteSqlAsync(
             $"""UPDATE outbox_messages SET "LeaseExpiresAt" = {factory.Clock.UtcNow.AddMinutes(-1)} WHERE "Status" = 'Pending'""");
+    }
+
+    /// <summary>
+    /// Fast-forwards a parked row past <see cref="DeliveryReconciler.ReconcileDelay"/>, the same way
+    /// <see cref="ExpireLeasesAsync"/> fast-forwards a lease: by writing the column directly, because
+    /// the frozen test clock has no passage of time for the reconciler's own <c>AvailableAt</c> gate
+    /// to wait out.
+    /// </summary>
+    private async Task PassReconcileDelayAsync()
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        await db.Database.ExecuteSqlAsync(
+            $"""
+            UPDATE outbox_messages SET "AvailableAt" = {factory.Clock.UtcNow}
+            WHERE "Status" = 'AwaitingReconciliation'
+            """);
     }
 
     private static FunctionCallContent Call(string name, object arguments)

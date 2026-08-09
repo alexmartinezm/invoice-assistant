@@ -9,7 +9,10 @@ namespace Api.Features.Actions;
 /// It carries the status, the attempt count and a machine-readable error code — not the stored
 /// response body, and not the raw error detail. What a caller needs is "where has this got to";
 /// what the body would add is a second copy of a payload they already received, with whatever a
-/// failing endpoint happened to put in it.
+/// failing endpoint happened to put in it. <see cref="ErrorCode"/> is a closed, server-chosen
+/// vocabulary (<c>transport_lost</c>, <c>delivery_rejected</c>, ...); the execution's own
+/// <c>ErrorDetail</c> is not — it can hold a caught exception's <c>Message</c> or a provider's own
+/// error text — and does not appear here at all, never mind truncated, for exactly that reason.
 /// </remarks>
 /// <param name="Message">
 /// The sentence to show. The server writes every one of these (ADR 007), and this field is how a
@@ -28,7 +31,6 @@ public sealed record ActionExecutionView(
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     string? ErrorCode,
-    string? ErrorDetail,
     Guid? DeliveryId,
     string? DeliveryStatus,
     string? Message)
@@ -47,7 +49,6 @@ public sealed record ActionExecutionView(
         execution.StartedAt,
         execution.CompletedAt,
         execution.ErrorCode,
-        execution.ErrorDetail,
         execution.DeliveryId,
         deliveryStatus,
         message);

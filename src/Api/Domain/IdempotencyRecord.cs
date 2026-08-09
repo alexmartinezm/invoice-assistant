@@ -48,6 +48,13 @@ public sealed class IdempotencyRecord
 
     public string? ResponseJson { get; private set; }
 
+    /// <summary>
+    /// The allowlisted response headers a replay restores — <c>Location</c>, <c>ETag</c> — so the
+    /// second call to see a created resource is told the same things the first one was. Null when
+    /// the response carried none of them, not merely when nobody thought to record them.
+    /// </summary>
+    public string? ResponseHeadersJson { get; private set; }
+
     public DateTimeOffset CreatedAt { get; init; }
 
     /// <summary>

@@ -227,7 +227,6 @@ export interface ActionExecutionView {
   startedAt: string | null;
   completedAt: string | null;
   errorCode: string | null;
-  errorDetail: string | null;
   deliveryId: string | null;
   deliveryStatus: string | null;
   /**

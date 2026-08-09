@@ -199,6 +199,25 @@ public sealed class ActionExecution
     public void RecordProviderMessage(string providerMessageId) => ProviderMessageId = providerMessageId;
 
     /// <summary>
+    /// Pushes the next reconciliation attempt out, without changing anything else. For a pass that
+    /// found neither a receipt nor a settled delivery: the execution is exactly as unresolved as it
+    /// was, and the only thing that should move is when somebody looks again.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a genuinely evidence-less <c>Unknown</c> — the transport failed before the
+    /// request reached the server at all, so no receipt will ever exist — stayed permanently "due":
+    /// nothing advanced <see cref="NextAttemptAt"/>, so it was reselected first on every single pass,
+    /// crowding out executions the reconciler could actually settle. Deferring is what lets the query
+    /// that finds "what is due" mean it.
+    /// </remarks>
+    public void DeferReconciliation(DateTimeOffset next)
+    {
+        RequireOpen();
+
+        NextAttemptAt = next;
+    }
+
+    /// <summary>
     /// Succeeded and Failed are terminal. Everything else may still move, including Unknown — an
     /// execution reconciled from an authoritative receipt is the whole reason that state exists.
     /// </summary>

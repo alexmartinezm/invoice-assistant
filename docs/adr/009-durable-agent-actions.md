@@ -36,7 +36,7 @@ audited `Denied`, which erases the human from the record of a decision they demo
 | Execution | What was attempted, and how did it end? | `ActionExecution` |
 | External effect | Did the provider take it? | `InvoiceDelivery`, driven by `OutboxMessage` |
 
-Five rules follow, and are decided here rather than left implicit:
+Nine rules follow, and are decided here rather than left implicit:
 
 1. **Authorization is a database compare-and-set, not tracked-entity timing.** Approve, reject and
    expire are one conditional `UPDATE … WHERE status = 'Pending' AND expires_at > now`; the
@@ -79,6 +79,37 @@ Five rules follow, and are decided here rather than left implicit:
    worker that defers an ambiguous send back to the queue is one that sends a second email on the
    strength of a shrug.
 
+7. **A "not yet" is not a "no".** The idempotency filter's own `409 request_in_progress` — a twin
+   still holding the key — is answered by a live attempt exactly the way a lost transport answer is:
+   `Unknown`, not `Failed`. Reading it as a deterministic refusal would settle an execution as failed
+   for an effect that had not actually failed, on the strength of a race the effect itself did not
+   lose. The reclaim guard this implies — an `Unknown` execution is not retried before its own
+   reconcile deadline — has one deliberate exception: a background pass that already checked for a
+   receipt and a delivery and found neither *is* the "somebody looked and there is nothing" decision
+   the deadline exists to wait for, so it releases the attempt immediately rather than making the
+   next caller wait out a delay nothing further will resolve.
+
+8. **A settler that finds no evidence defers; it does not spin.** A reconcile pass that cannot
+   settle an `Unknown` execution pushes its own next look forward rather than leaving it "due"
+   forever — otherwise the same unresolvable row is reselected first on every pass, ahead of
+   whatever a batch limit is actually there to make room for.
+
+9. **The database is the backstop against two writers, not just one.** Every row this feature settles
+   outside a compare-and-set — `ActionExecution`, `InvoiceDelivery`, `OutboxMessage` — carries
+   Postgres's own row version (`xmin`) as an EF concurrency token. A lease says who is *supposed* to
+   be working a row; it does not stop a worker whose lease already lapsed from finishing a stale
+   write anyway, and a live retry reconciling from a receipt can land at the same moment the outbox
+   settles the same execution's delivery. The token is what turns whichever of the two writes second
+   into a caught `DbUpdateConcurrencyException` — reloaded and answered from, never silently
+   overwritten. The same token closes a gap one level up: a genuine revision race on `Invoice`,
+   discovered only at save time rather than at the door, now answers the same `412 resource_changed`
+   an `If-Match` mismatch does, not an unhandled 500.
+
+   Referential integrity is the same idea applied to *which* rows may exist at all: foreign keys
+   from `OutboxMessage` to the `InvoiceDelivery` it transports, from `InvoiceDelivery` to its
+   `Invoice` and optionally to the `ActionExecution` waiting on it, and back — an invariant this code
+   already maintained by construction, now one the database enforces rather than assumes.
+
 ### What this is not
 
 Not a workflow engine, a saga framework or a reusable package. No distributed transaction across
@@ -107,6 +138,12 @@ deliberately asked for.
 - A body too large to fingerprint is refused with `413` rather than hashed by its prefix. Two
   requests that agree for 256 KiB are not the same request, and replaying one as the other would be
   a wrong answer that looks exactly like a right one.
+- An `If-Match` the caller sent and got wrong answers `400 invalid_precondition` rather than being
+  read as no header at all — a malformed value must not silently downgrade a conditional write into
+  an unconditional one.
+- A replayed response restores the allowlisted headers (`Location`, `ETag`) the first response
+  carried. The idempotency contract is that a replay is indistinguishable from the original; a
+  caller that created a resource and lost the reply still needs to be told where it landed.
 - ADR 002 is untouched: tools still call our own REST API over HTTP with the caller's bearer token.
   Bridging the transaction boundary that creates is exactly what the stable key plus the
   transactional receipt is for. No token, refresh token or provider secret is ever persisted, so

@@ -57,7 +57,22 @@ public sealed class TransactionalIdempotencyFilter(
     /// <summary>Matches the column, and is generous for a UUID or a client-generated token.</summary>
     public const int MaxKeyLength = 100;
 
+    /// <summary>
+    /// What a caller is told when its key is claimed but not yet settled — by a twin still running,
+    /// or by a handler waiting on a lock. Public so a caller classifying <em>this</em> response (an
+    /// <see cref="Api.Assistant.Tools.ActionExecutor"/> retrying under the same key) can tell it apart
+    /// from an authoritative refusal: this one is not a decision, it is a "not yet".
+    /// </summary>
+    public const string RequestInProgressCode = "request_in_progress";
+
     private const string LockNotAvailable = "55P03";
+
+    /// <summary>
+    /// The response headers worth replaying. Not everything — most of a response is regenerated
+    /// identically from the stored body — but <c>Location</c> and <c>ETag</c> are contractual: a
+    /// client that created a resource and lost the reply still needs to know where it landed.
+    /// </summary>
+    private static readonly string[] ReplayableHeaders = ["Location", "ETag"];
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -123,7 +138,7 @@ public sealed class TransactionalIdempotencyFilter(
 
         if (claimed == 0)
         {
-            var replay = await ReplayAsync(key, userId, operation, requestHash, cancellationToken);
+            var replay = await ReplayAsync(http.Response, key, userId, operation, requestHash, cancellationToken);
             await transaction.RollbackAsync(CancellationToken.None);
             return replay;
         }
@@ -143,6 +158,17 @@ public sealed class TransactionalIdempotencyFilter(
             await transaction.RollbackAsync(CancellationToken.None);
             logger.LogWarning(exception, "A handler under key {Key} timed out waiting for a lock.", key);
             return InProgress(key);
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            // The handler read a concurrency-tokened row and something else committed a change to it
+            // before this write landed — the same fact an If-Match mismatch reports, just discovered
+            // at save time instead of at the door. Answering with the same code the precondition
+            // check uses is what lets a caller treat the two arrivals of "this changed under you" as
+            // one thing, rather than one being a 412 and the other an unexplained 500.
+            await transaction.RollbackAsync(CancellationToken.None);
+            logger.LogInformation(exception, "A handler under key {Key} lost a concurrency race.", key);
+            return ResourceChanged(key);
         }
         catch
         {
@@ -169,7 +195,9 @@ public sealed class TransactionalIdempotencyFilter(
             return result;
         }
 
-        await CompleteAsync(key, userId, status, JsonSerializer.Serialize(value, value.GetType(), Json), cancellationToken);
+        await CompleteAsync(
+            key, userId, status, JsonSerializer.Serialize(value, value.GetType(), Json),
+            CaptureReplayableHeaders(http.Response), cancellationToken);
 
         faults.Reach(FaultCheckpoint.BeforeBusinessTransactionCommit);
         await transaction.CommitAsync(cancellationToken);
@@ -219,6 +247,7 @@ public sealed class TransactionalIdempotencyFilter(
     /// a refusal if it is not.
     /// </summary>
     private async Task<object> ReplayAsync(
+        HttpResponse response,
         string key,
         Guid userId,
         string operation,
@@ -269,6 +298,8 @@ public sealed class TransactionalIdempotencyFilter(
 
         Count("replayed");
 
+        RestoreReplayableHeaders(response, existing.ResponseHeadersJson);
+
         using var document = JsonDocument.Parse(existing.ResponseJson ?? "null");
         return Results.Json(document.RootElement.Clone(), statusCode: existing.StatusCode);
     }
@@ -288,14 +319,53 @@ public sealed class TransactionalIdempotencyFilter(
         Guid userId,
         int status,
         string responseJson,
+        string? headersJson,
         CancellationToken cancellationToken) =>
         db.Database.ExecuteSqlAsync(
             $"""
             UPDATE idempotency_keys
-            SET "StatusCode" = {status}, "ResponseJson" = {responseJson}::json, "CompletedAt" = {clock.UtcNow}
+            SET "StatusCode" = {status}, "ResponseJson" = {responseJson}::json,
+                "ResponseHeadersJson" = {headersJson}::json, "CompletedAt" = {clock.UtcNow}
             WHERE "UserId" = {userId} AND "Key" = {key}
             """,
             cancellationToken);
+
+    /// <summary>
+    /// Pulls the allowlisted headers off the live response, so a replay can restore them. Handlers
+    /// under this filter set <c>ETag</c> directly on <see cref="HttpResponse.Headers"/> and, for the
+    /// same reason, now set <c>Location</c> the same way rather than leaving it to the
+    /// <see cref="IResult"/>'s own deferred execution — which runs <em>after</em> this filter has
+    /// already returned, too late to capture.
+    /// </summary>
+    private static string? CaptureReplayableHeaders(HttpResponse response)
+    {
+        Dictionary<string, string>? headers = null;
+
+        foreach (var name in ReplayableHeaders)
+        {
+            if (response.Headers.TryGetValue(name, out var value) && value.Count > 0)
+            {
+                (headers ??= [])[name] = value.ToString();
+            }
+        }
+
+        return headers is null ? null : JsonSerializer.Serialize(headers, Json);
+    }
+
+    private static void RestoreReplayableHeaders(HttpResponse response, string? headersJson)
+    {
+        if (headersJson is not { Length: > 0 })
+        {
+            return;
+        }
+
+        var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(headersJson, Json);
+
+        foreach (var (name, value) in headers ?? [])
+        {
+            response.Headers[name] = value;
+        }
+    }
 
     /// <summary>
     /// The fingerprint the replay decision is made on. Credentials are not part of it and are never
@@ -383,7 +453,19 @@ public sealed class TransactionalIdempotencyFilter(
         "Request already in progress",
             $"Another request with key '{key}' is still running. Retry in a moment; it will replay that request's answer.",
             StatusCodes.Status409Conflict,
-            "request_in_progress");
+            RequestInProgressCode);
+    }
+
+    private static IResult ResourceChanged(string key)
+    {
+        Count("resource_changed");
+
+        return Problem(
+            "The record this request targeted has changed",
+            $"Key '{key}' targeted a record that another request changed between being read and being saved. "
+                + "Nothing was changed by this request. Ask for it again to see the current state.",
+            StatusCodes.Status412PreconditionFailed,
+            "resource_changed");
     }
 
     /// <summary>

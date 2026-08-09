@@ -240,6 +240,7 @@ public class DurableRecoveryTests(DeliveryApiFactory factory) : IClassFixture<De
 
         Assert.Equal(InvoiceDeliveryStatus.Unknown, (await DeliveryForAsync(number)).Status);
 
+        await PassReconcileDelayAsync();
         await factory.RunOutboxAsync();
 
         var settled = await DeliveryForAsync(number);
@@ -542,6 +543,23 @@ public class DurableRecoveryTests(DeliveryApiFactory factory) : IClassFixture<De
             UPDATE action_executions
             SET "AttemptExpiresAt" = {factory.Clock.UtcNow.AddMinutes(-1)}
             WHERE "AttemptExpiresAt" IS NOT NULL
+            """);
+    }
+
+    /// <summary>
+    /// Fast-forwards a parked outbox row past the delivery reconciler's own reconcile delay, the
+    /// same way <see cref="ExpireAttemptLeasesAsync"/> fast-forwards a lease: the frozen test clock
+    /// has no passage of time for its <c>AvailableAt</c> gate to wait out.
+    /// </summary>
+    private async Task PassReconcileDelayAsync()
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        await db.Database.ExecuteSqlAsync(
+            $"""
+            UPDATE outbox_messages SET "AvailableAt" = {factory.Clock.UtcNow}
+            WHERE "Status" = 'AwaitingReconciliation'
             """);
     }
 

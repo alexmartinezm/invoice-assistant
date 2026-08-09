@@ -36,6 +36,30 @@ public sealed class ExecutionReconciler(
 
     public const int BatchSize = 50;
 
+    /// <summary>
+    /// How much further out to push a genuinely evidence-less execution before checking again.
+    /// Grows with the execution's age: a fresh <c>Unknown</c> is worth polling quickly, because most
+    /// transient answers show up within seconds, but one that is still unresolved an hour later is
+    /// not going to be settled by asking every fifteen seconds — it is going to be settled by a
+    /// person, and until then this is just how often the row is willing to be looked at again.
+    /// </summary>
+    private static TimeSpan ReconcileBackoff(DateTimeOffset createdAt, DateTimeOffset now)
+    {
+        var age = now - createdAt;
+
+        if (age < TimeSpan.FromMinutes(1))
+        {
+            return TimeSpan.FromSeconds(15);
+        }
+
+        if (age < TimeSpan.FromMinutes(10))
+        {
+            return TimeSpan.FromMinutes(1);
+        }
+
+        return age < TimeSpan.FromHours(1) ? TimeSpan.FromMinutes(5) : TimeSpan.FromMinutes(30);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(Interval);
@@ -88,6 +112,8 @@ public sealed class ExecutionReconciler(
             activity?.SetTag("assistant.tool", execution.ToolName);
             activity?.SetTag("assistant.evidence", "idempotency_receipt");
 
+            var moved = true;
+
             if (await SettleFromDeliveryAsync(db, execution, cancellationToken)
                 || await executor.TryReconcileFromReceiptAsync(execution, cancellationToken))
             {
@@ -98,27 +124,57 @@ public sealed class ExecutionReconciler(
                     narrator.RecordClosingLine(
                         execution.ConversationId, await narrator.DescribeSettledAsync(execution, cancellationToken));
                 }
-
-                settled++;
-                continue;
             }
-
-            // No evidence either way. Release the abandoned attempt so a caller can resume it under
-            // their own identity, and leave the outcome unstated rather than invented.
-            if (execution.Status is ActionExecutionStatus.Executing)
+            else if (execution.Status is ActionExecutionStatus.Executing)
             {
+                // No evidence either way. Release the abandoned attempt so a caller can resume it
+                // under their own identity, and leave the outcome unstated rather than invented.
+                //
+                // NextAttemptAt is set to now, not to a further delay: this pass already did the
+                // checking a delay exists to wait out — it looked for a receipt and a settled
+                // delivery and found neither — so this *is* the "explicit resume decision" that lets
+                // a caller claim it immediately, not a fresh Unknown that might still be racing a
+                // live request nobody has checked on yet.
                 logger.LogWarning(
                     "Execution {ExecutionId} was abandoned mid-attempt with no receipt; releasing it for resume.",
                     execution.Id);
 
-                execution.MarkUnknown("attempt_abandoned", "The attempt was not completed.", now + ActionExecutor.ReconcileDelay);
+                execution.MarkUnknown("attempt_abandoned", "The attempt was not completed.", now);
+            }
+            else
+            {
+                // Already Unknown, and still no evidence. Nothing was learned, so nothing about the
+                // execution changes — only when this row is willing to be looked at again, which is
+                // what stops it from being reselected first on every single pass and crowding out
+                // ones the evidence above could actually settle.
+                execution.DeferReconciliation(now + ReconcileBackoff(execution.CreatedAt, now));
+                moved = false;
+            }
+
+            // Saved per execution, not batched at the end: a concurrency conflict on one row — the
+            // live path settling the same execution between this pass reading it and writing it back
+            // — must not also roll back everything this pass already resolved for every other row in
+            // the batch, and reconciling from receipt or delivery is on this same context per
+            // iteration regardless, so there is nothing gained by deferring the save.
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException exception)
+            {
+                logger.LogInformation(
+                    exception,
+                    "Execution {ExecutionId} was settled by something else while this pass was reconciling it.",
+                    execution.Id);
+
+                db.Entry(execution).State = EntityState.Detached;
+                continue;
+            }
+
+            if (moved)
+            {
                 settled++;
             }
-        }
-
-        if (settled > 0)
-        {
-            await db.SaveChangesAsync(cancellationToken);
         }
 
         return settled;

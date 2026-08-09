@@ -101,8 +101,14 @@ public sealed class OutboxDispatcher(
 
         if (delivery is null)
         {
+            // The foreign key on DeliveryId makes this unreachable from any write this codebase
+            // makes; a row only lands here through data that predates that constraint, or through
+            // something outside this application's own writes. Either way it is not "done" — nothing
+            // was transported — so it is parked rather than completed: out of this dispatcher's own
+            // claim query, visible to an operator, and not silently retried into the same log line
+            // forever.
             logger.LogError("Outbox message {MessageId} points at a delivery that does not exist.", message.Id);
-            message.Complete(clock.UtcNow);
+            message.AwaitReconciliation(clock.UtcNow, "orphaned: no invoice_deliveries row for DeliveryId");
             await db.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -168,7 +174,23 @@ public sealed class OutboxDispatcher(
         }
 
         await SettleExecutionAsync(delivery, cancellationToken);
-        await db.SaveChangesAsync(cancellationToken);
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            // The lease says this worker owns the row, but the lease is an advisory pointer, not a
+            // database-level lock — nothing stopped a worker whose lease had already lapsed from
+            // reaching this same line a second time. The concurrency token on the delivery and the
+            // execution is the actual backstop: whichever of the two writers gets here second finds
+            // the row has moved and must not overwrite what the first one already committed.
+            logger.LogWarning(
+                exception,
+                "Outbox message {MessageId} lost a race writing its outcome; a concurrent writer already settled it.",
+                message.Id);
+        }
     }
 
     /// <summary>

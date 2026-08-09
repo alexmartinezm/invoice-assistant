@@ -115,7 +115,7 @@ public sealed class ActionExecutor(
         }
 
         ExecutionOutcome
-            .Classify(response.StatusCode, response.Payload)
+            .Classify(response.StatusCode, response.Payload, response.Code)
             .ApplyTo(
                 execution,
                 response.StatusCode,
@@ -137,6 +137,13 @@ public sealed class ActionExecutor(
     /// happened and its absence proves it did not — so a completed receipt is authoritative for a
     /// local effect, and no second request is needed to find out.
     /// </remarks>
+    /// <returns>
+    /// False when there was nothing to reconcile from, <em>and also</em> when a concurrent writer —
+    /// the outbox settling the delivery this same execution was waiting on, another caller's retry —
+    /// already moved it on. Both cases mean this caller has nothing further to do with it; only the
+    /// caller who actually observes the settled result needs to tell them apart, from
+    /// <paramref name="execution"/>'s own state after the call.
+    /// </returns>
     public async Task<bool> TryReconcileFromReceiptAsync(ActionExecution execution, CancellationToken cancellationToken)
     {
         if (execution.Status is not ActionExecutionStatus.Unknown)
@@ -170,12 +177,25 @@ public sealed class ActionExecutor(
                 clock.UtcNow,
                 ReconcileDelay);
 
-        if (db.Entry(execution).State is EntityState.Detached)
+        try
         {
-            db.ActionExecutions.Attach(execution).State = EntityState.Modified;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            // execution was tracked from the moment it was loaded, carrying the concurrency token
+            // that snapshot was read with — so this fires only when something else genuinely wrote
+            // the row first, e.g. the outbox settling the delivery this execution was waiting on
+            // while this reconcile pass was in flight. Reloading is what stops the caller reporting
+            // the verdict just computed from a copy the database no longer agrees with; the row it
+            // reloads is whatever that other writer actually left behind.
+            logger.LogInformation(
+                exception, "Execution {ExecutionId} was settled by something else while reconciling.", execution.Id);
+
+            await db.Entry(execution).ReloadAsync(cancellationToken);
+            return false;
         }
 
-        await db.SaveChangesAsync(cancellationToken);
         return true;
     }
 
@@ -191,7 +211,17 @@ public sealed class ActionExecutor(
         var claimed = await db.ActionExecutions
             .Where(e => e.Id == executionId
                 && (e.Status == ActionExecutionStatus.Pending
-                    || e.Status == ActionExecutionStatus.Unknown
+                    // Not simply "Unknown" — an execution whose answer is merely unconfirmed is
+                    // still, quite possibly, somebody else's live request: the transport-lost case
+                    // legitimately races a concurrent server-side attempt that has not finished, and
+                    // reclaiming instantly is exactly how that race sent the same command twice under
+                    // one key, tripping over the twin and settling this attempt as Failed for an
+                    // effect that had not actually failed. NextAttemptAt is the same reconcile delay
+                    // TryReconcileFromReceiptAsync and the background reconciler already respect;
+                    // before it a caller is told the current Unknown state, not handed a new attempt.
+                    || (e.Status == ActionExecutionStatus.Unknown
+                        && e.NextAttemptAt != null
+                        && e.NextAttemptAt <= now)
                     // An attempt whose lease ran out belongs to nobody. Taking it over is safe
                     // because the retry carries the same idempotency key, so the receipt decides
                     // whether this is a resume or a replay — see TryReconcileFromReceiptAsync.
@@ -217,7 +247,22 @@ public sealed class ActionExecutor(
         Activity? activity,
         CancellationToken cancellationToken)
     {
-        await db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            // Narrow, but real: this attempt's own lease could expire at the same instant the
+            // reconciler decides it is abandoned, and both may reach a write. Whichever loses this
+            // race does not get to insist on its own locally-computed verdict — the database's
+            // version is what actually happened, and that is what the caller is told.
+            logger.LogWarning(
+                exception, "Execution {ExecutionId} lost a concurrency race while settling.", execution.Id);
+
+            await db.Entry(execution).ReloadAsync(cancellationToken);
+            payload = StoredPayload(execution);
+        }
 
         activity?.SetTag("assistant.execution_status", execution.Status.ToString());
         AssistantTelemetry.RecordSettled(execution);

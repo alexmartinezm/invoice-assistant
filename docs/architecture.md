@@ -189,6 +189,7 @@ business change and the receipt that replays it commit together or not at all:
 | A body over 256 KiB | `413 request_body_too_large` — refused rather than fingerprinted by its prefix |
 | A twin still running | Waits on the row, then replays; `409 request_in_progress` past a bounded lock timeout |
 | The handler cannot get its own lock | `409 request_in_progress` — the timeout covers the handler's statements too |
+| The handler's optimistic check loses a race | `412 resource_changed` — discovered at save time, not treated as a server error |
 | 5xx or an exception | Rolled back entirely; the key is free and the retry is a first attempt |
 
 The fingerprint is `SHA256(method, normalized path and query, body, If-Match)`, scoped by user.
@@ -196,7 +197,14 @@ Credentials are never part of it and never stored, and the body is read to the c
 two requests that agree for 256 KiB are not the same request, so an oversized one is refused rather
 than hashed short. Receipts expire after 30 days by **deletion** — the previous design ignored old
 rows on read while the unique index kept reserving them, so a key could be simultaneously too old to
-replay and already taken.
+replay and already taken. A replay also restores the allowlisted response headers (`Location`,
+`ETag`) the original carried — the idempotency contract is that a replay is indistinguishable from
+the first answer, and a caller that created a resource and lost the reply still needs to know where
+it landed.
+
+An execution reading a `409 request_in_progress` off its own send treats it the same way it treats a
+lost transport answer — `Unknown`, not `Failed`. A twin still holding the key is not a refusal, and
+settling the execution as failed for it would be a false negative on a write that may yet land.
 
 `POST /api/invoices/{number}/send` answers **202** with a delivery record rather than 200. The
 ledger change is done; the email is not, and the status code says which. No handler under the
@@ -205,7 +213,10 @@ idempotency filter may call an external service — external work is an outbox r
 Invoice responses carry `revision` and an `ETag`. Approved assistant writes send the revision they
 were proposed against as `If-Match`, and a mismatch is `412 resource_changed`: an invoice somebody
 edited during the five-minute approval window is a different invoice, and the server fails closed
-rather than executing against state the approver never saw.
+rather than executing against state the approver never saw. A malformed `If-Match` — present but
+not a revision this server wrote — is `400 invalid_precondition` rather than being read as no header
+at all; a header the caller sent and got wrong must not silently downgrade a conditional write into
+an unconditional one.
 
 ## Anatomy of a chat turn
 
@@ -254,6 +265,9 @@ question and needs different machinery (ADR 009).
 | Approval freshness | Approved arguments execute only against the captured revision, and the command fingerprint is re-verified | A changed invoice — or an altered proposal — needs a fresh one |
 | Abandoned attempt | An attempt holds a lease; when it lapses the execution is reclaimable under the same key | A resume is a replay, never a second write |
 | Recovery | A background pass settles from receipts and deliveries and releases what it cannot settle | It **never** re-executes: it holds no bearer token and must not acquire one |
+| Stalled reconciliation | An `Unknown` a pass could not settle defers its own next look rather than staying "due" | Otherwise it is reselected first on every pass, ahead of rows the pass could actually settle |
+| Concurrent settlers | `ActionExecution`, `InvoiceDelivery` and `OutboxMessage` carry Postgres's own row version as a concurrency token | The second writer to save gets a caught conflict and reloads, never a silent overwrite |
+| Referential integrity | Foreign keys tie an outbox row to its delivery, and a delivery to its invoice and execution | A row can no longer reference one that was never written |
 | Outbox delivery | Committed work is retried until settled or classified | **At-least-once dispatch**, not exactly-once |
 | Provider effect | Effectively-once *when the provider honours a stable key or exposes receipt lookup* | With neither, an ambiguous result stays `Unknown` and is not retried |
 

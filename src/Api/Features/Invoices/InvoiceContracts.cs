@@ -86,6 +86,22 @@ public sealed record CreateInvoiceRequest(
 
 public sealed record UpdateDueDateRequest(DateOnly DueDate);
 
+/// <summary>Whether an <c>If-Match</c> header carried a precondition, and if so, whether it parsed.</summary>
+public enum PreconditionHeader
+{
+    /// <summary>No header at all. Allowed: an unconditional write has no precondition to check.</summary>
+    Absent,
+
+    Valid,
+
+    /// <summary>
+    /// Present but not a revision this server wrote. Distinct from <see cref="Absent"/> on purpose —
+    /// a header the caller bothered to send and got wrong is a caller bug, and folding it into "no
+    /// precondition" would silently run the write the header was there to stop.
+    /// </summary>
+    Invalid,
+}
+
 /// <summary>
 /// The <c>If-Match</c> precondition on an invoice write, and the <c>ETag</c> that produces it.
 /// </summary>
@@ -102,25 +118,46 @@ public static class InvoicePrecondition
 
     /// <summary>
     /// Reads the header, tolerating both the quoted form HTTP specifies and the bare number a
-    /// hand-written curl is likely to send. Absent means "no precondition", which is allowed.
+    /// hand-written curl is likely to send.
     /// </summary>
-    public static bool TryRead(HttpRequest request, out long revision)
+    public static PreconditionHeader TryRead(HttpRequest request, out long revision)
     {
         revision = 0;
 
         var value = request.Headers.IfMatch.ToString();
         if (string.IsNullOrWhiteSpace(value))
         {
-            return false;
+            return PreconditionHeader.Absent;
         }
 
-        return long.TryParse(value.Trim().TrimStart('W', '/').Trim('"'), out revision);
+        return long.TryParse(value.Trim().TrimStart('W', '/').Trim('"'), out revision)
+            ? PreconditionHeader.Valid
+            : PreconditionHeader.Invalid;
     }
 
     /// <summary>Null when the write may proceed, otherwise the refusal to return.</summary>
     public static IResult? Check(HttpRequest request, Invoice invoice)
     {
-        if (!TryRead(request, out var expected) || expected == invoice.Revision)
+        var header = TryRead(request, out var expected);
+
+        if (header is PreconditionHeader.Absent)
+        {
+            return null;
+        }
+
+        if (header is PreconditionHeader.Invalid)
+        {
+            // Not "no precondition" — a header the caller sent and got wrong must not silently
+            // downgrade to an unconditional write, which is what treating it as absent would do.
+            return Results.Problem(
+                title: "Malformed If-Match",
+                detail: $"The If-Match header on this request could not be read as a revision number. "
+                    + $"Send the exact value from the invoice's own ETag, or omit the header.",
+                statusCode: StatusCodes.Status400BadRequest,
+                extensions: new Dictionary<string, object?> { ["code"] = "invalid_precondition" });
+        }
+
+        if (expected == invoice.Revision)
         {
             return null;
         }

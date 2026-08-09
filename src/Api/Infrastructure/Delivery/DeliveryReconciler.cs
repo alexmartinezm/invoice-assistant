@@ -88,24 +88,46 @@ public sealed class DeliveryReconciler(
                 delivery.Requeued();
                 await ResumeOutboxAsync(delivery.Id, now, cancellationToken);
                 activity?.SetTag("assistant.delivery_result", "not_found");
-                settled++;
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Delivery {DeliveryId} reconciled to delivered as {MessageId}", delivery.Id, receipt.ProviderMessageId);
+
+                delivery.Delivered(receipt.ProviderMessageId, now);
+                await CompleteOutboxAsync(delivery.Id, now, cancellationToken);
+                await SettleExecutionAsync(delivery, receipt, cancellationToken);
+
+                activity?.SetTag("assistant.delivery_result", "delivered");
+            }
+
+            // Saved per delivery, not batched at the end. This lease already keeps two reconcilers
+            // off the same row; the concurrency token is the backstop for the row it did not lease —
+            // the execution a live retry is settling at the same moment — and a conflict there must
+            // not roll back every other delivery this pass already resolved.
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException exception)
+            {
+                logger.LogInformation(
+                    exception,
+                    "Delivery {DeliveryId} touched a row something else had already changed.",
+                    delivery.Id);
+
+                // Only this iteration's entries — never ChangeTracker.Clear(), which would also
+                // detach every delivery still waiting its turn in this same batch and silently stop
+                // persisting the rest of the pass.
+                foreach (var entry in db.ChangeTracker.Entries().Where(e => e.State != EntityState.Unchanged).ToList())
+                {
+                    entry.State = EntityState.Detached;
+                }
+
                 continue;
             }
 
-            logger.LogInformation(
-                "Delivery {DeliveryId} reconciled to delivered as {MessageId}", delivery.Id, receipt.ProviderMessageId);
-
-            delivery.Delivered(receipt.ProviderMessageId, now);
-            await CompleteOutboxAsync(delivery.Id, now, cancellationToken);
-            await SettleExecutionAsync(delivery, receipt, cancellationToken);
-
-            activity?.SetTag("assistant.delivery_result", "delivered");
             settled++;
-        }
-
-        if (settled > 0)
-        {
-            await db.SaveChangesAsync(cancellationToken);
         }
 
         return settled;
@@ -129,6 +151,11 @@ public sealed class DeliveryReconciler(
         var leased = await db.OutboxMessages
             .Where(message => message.DeliveryId == deliveryId
                 && message.Status == OutboxStatus.AwaitingReconciliation
+                // The delay the dispatcher parked this for, so a receipt the provider has not
+                // finished writing yet is not misread as "never received". Without this, the worker's
+                // own loop — dispatch, then reconcile, in the same pass — could ask before the delay
+                // it itself just scheduled has elapsed.
+                && message.AvailableAt <= now
                 && (message.LeaseExpiresAt == null || message.LeaseExpiresAt <= now))
             .ExecuteUpdateAsync(
                 set => set
