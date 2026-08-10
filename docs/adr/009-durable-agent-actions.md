@@ -36,7 +36,7 @@ audited `Denied`, which erases the human from the record of a decision they demo
 | Execution | What was attempted, and how did it end? | `ActionExecution` |
 | External effect | Did the provider take it? | `InvoiceDelivery`, driven by `OutboxMessage` |
 
-Nine rules follow, and are decided here rather than left implicit:
+Ten rules follow, and are decided here rather than left implicit:
 
 1. **Authorization is a database compare-and-set, not tracked-entity timing.** Approve, reject and
    expire are one conditional `UPDATE … WHERE status = 'Pending' AND expires_at > now`; the
@@ -110,6 +110,24 @@ Nine rules follow, and are decided here rather than left implicit:
    `Invoice` and optionally to the `ActionExecution` waiting on it, and back — an invariant this code
    already maintained by construction, now one the database enforces rather than assumes.
 
+10. **Settling the external effect and settling what it means for the execution waiting on it are
+    two saves, not one.** The outbox dispatcher and the delivery reconciler each commit the
+    delivery's and outbox row's outcome first — the record that a provider *actually did something* —
+    and only then attempt the execution's own projection of that fact, in a save of its own. A
+    conflict on the second must never roll back the first: an `ActionExecution` row losing a
+    concurrency race is not a reason to leave a provider's acceptance unrecorded and the outbox row
+    eligible to be sent again once its lease lapses. The corollary is a rule about what that loss
+    means: a settler that loses this second save has not learned the execution failed, or that no
+    evidence exists — it has learned someone else already recorded the truth, terminal or still in
+    flight — so it must not invent a delay this pass already spent, demote a healthy hand-off to
+    `Unknown`, or re-decide an outcome that is not its to decide. Where the loss leaves nothing
+    watching the row at all — no lease of its own to expire, because it was never abandoned, only
+    outrun — the execution reconciler's own sweep picks it up once the delivery has had a fair
+    chance to settle, deriving the identical verdict from the record the first save already made
+    durable. And a batch worker's `DbContext` carries no memory of a conflict it already lost: every
+    entry a failed save left tracked is detached before the next row in the same pass is touched,
+    the same discipline every per-row save in this feature now shares.
+
 ### What this is not
 
 Not a workflow engine, a saga framework or a reusable package. No distributed transaction across
@@ -144,6 +162,20 @@ deliberately asked for.
 - A replayed response restores the allowlisted headers (`Location`, `ETag`) the first response
   carried. The idempotency contract is that a replay is indistinguishable from the original; a
   caller that created a resource and lost the reply still needs to be told where it landed.
+- A `412 resource_changed` discovered at save time is a durable decision, not a transient one: the
+  filter records a completed receipt for it the moment the losing transaction rolls back, so a retry
+  under that same key replays the identical refusal instead of re-running the handler against
+  whatever the resource has since become. `409 request_in_progress` stays the one exception — a
+  "not yet", never worth a receipt of its own.
+- An execution left `Unknown` with no evidence is not a dead end for the person who has to act on it:
+  the approval card's own "Check again" is the same authorized approve action replayed under the same
+  execution, not a new capability — resuming under one's own identity is what the reclaim guard in
+  rule 7 was already built to allow.
+- The sentence for a rejected delivery states that the invoice was issued and names nothing else: the
+  provider's own error text is never interpolated into it. That text can hold anything a provider
+  chooses to send back, and this sentence is both returned to a client and recorded as an
+  assistant-authored line in the conversation — not a place for untrusted words with no closed
+  vocabulary.
 - ADR 002 is untouched: tools still call our own REST API over HTTP with the caller's bearer token.
   Bridging the transaction boundary that creates is exactly what the stable key plus the
   transactional receipt is for. No token, refresh token or provider secret is ever persisted, so

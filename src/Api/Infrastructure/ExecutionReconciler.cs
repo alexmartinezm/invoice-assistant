@@ -2,6 +2,7 @@ using Api.Assistant;
 using Api.Assistant.Tools;
 using Api.Domain;
 using Api.Features.Actions;
+using Api.Infrastructure.Delivery;
 using Microsoft.EntityFrameworkCore;
 
 namespace Api.Infrastructure;
@@ -98,7 +99,21 @@ public sealed class ExecutionReconciler(
                 // ours.
                 || (execution.Status == ActionExecutionStatus.Executing
                     && execution.AttemptExpiresAt != null
-                    && execution.AttemptExpiresAt <= now))
+                    && execution.AttemptExpiresAt <= now)
+                // Or waiting on a delivery that has had long enough to settle it. Settling an
+                // execution from its delivery is normally the dispatcher's own job, done in the same
+                // pass that marks the delivery terminal — but that is now a second, separate save
+                // (see OutboxDispatcher), and a concurrency conflict on that second save is caught
+                // and logged rather than retried. Without this branch a row that lost exactly that
+                // race would have no owner ever again: it carries no lease of its own to expire, so
+                // nothing would reselect it. SettleFromDeliveryAsync below is a no-op for a delivery
+                // that has not settled yet, so this is a safe, idle check for the common case where
+                // nothing went wrong.
+                || (execution.Status == ActionExecutionStatus.Executing
+                    && execution.DeliveryId != null
+                    && execution.AttemptExpiresAt == null
+                    && execution.LastAttemptAt != null
+                    && execution.LastAttemptAt <= now - OutboxDispatcher.LeaseDuration))
             .OrderBy(execution => execution.CreatedAt)
             .Take(BatchSize)
             .ToListAsync(cancellationToken);
@@ -125,10 +140,16 @@ public sealed class ExecutionReconciler(
                         execution.ConversationId, await narrator.DescribeSettledAsync(execution, cancellationToken));
                 }
             }
-            else if (execution.Status is ActionExecutionStatus.Executing)
+            else if (execution.Status is ActionExecutionStatus.Executing
+                && execution.AttemptExpiresAt is { } expiresAt
+                && expiresAt <= now)
             {
-                // No evidence either way. Release the abandoned attempt so a caller can resume it
-                // under their own identity, and leave the outcome unstated rather than invented.
+                // No evidence either way, and — re-checked here, not assumed from the branch above —
+                // still genuinely the same abandoned attempt this pass selected: the lease this
+                // condition tests is exactly ActionExecutor's own reclaim guard, so an Executing row
+                // that still satisfies it was not touched by anyone else while this pass was running.
+                // Release it so a caller can resume it under their own identity, and leave the
+                // outcome unstated rather than invented.
                 //
                 // NextAttemptAt is set to now, not to a further delay: this pass already did the
                 // checking a delay exists to wait out — it looked for a receipt and a settled
@@ -141,13 +162,23 @@ public sealed class ExecutionReconciler(
 
                 execution.MarkUnknown("attempt_abandoned", "The attempt was not completed.", now);
             }
-            else
+            else if (execution.Status is ActionExecutionStatus.Unknown)
             {
-                // Already Unknown, and still no evidence. Nothing was learned, so nothing about the
+                // Still Unknown, and still no evidence. Nothing was learned, so nothing about the
                 // execution changes — only when this row is willing to be looked at again, which is
                 // what stops it from being reselected first on every single pass and crowding out
                 // ones the evidence above could actually settle.
                 execution.DeferReconciliation(now + ReconcileBackoff(execution.CreatedAt, now));
+                moved = false;
+            }
+            else
+            {
+                // Neither branch above applies: TryReconcileFromReceiptAsync lost its own
+                // concurrency race and reloaded execution to whatever a concurrent writer actually
+                // left behind — a terminal Succeeded/Failed, or Executing again with a fresh lease
+                // from AwaitDelivery. Either way something else already recorded the current truth
+                // this pass; it is not this pass's to re-decide, and there is no closing line to add
+                // that the settler which actually won has not already written.
                 moved = false;
             }
 
@@ -167,7 +198,16 @@ public sealed class ExecutionReconciler(
                     "Execution {ExecutionId} was settled by something else while this pass was reconciling it.",
                     execution.Id);
 
-                db.Entry(execution).State = EntityState.Detached;
+                // Not just the execution: if it settled here, RecordClosingLine above already queued
+                // a Message for it. Left tracked, that Added entry would ride along on the *next*
+                // iteration's SaveChangesAsync and insert a closing line for this execution while
+                // processing a different one — detaching only execution left exactly that Message
+                // behind for the next iteration to accidentally persist.
+                foreach (var entry in db.ChangeTracker.Entries().Where(e => e.State != EntityState.Unchanged).ToList())
+                {
+                    entry.State = EntityState.Detached;
+                }
+
                 continue;
             }
 

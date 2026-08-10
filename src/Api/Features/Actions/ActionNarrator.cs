@@ -41,9 +41,15 @@ public sealed class ActionNarrator(AppDbContext db, IClock clock)
         // is Sent, the customer owes money — and the provider then refused to carry it. Two facts,
         // stated separately, because the user's next step depends on the second one and collapsing
         // them into the general sentence would send them looking for an invoice still in draft.
+        //
+        // Deliberately not interpolating the provider's own error text here: this sentence is
+        // returned to the client and recorded as an assistant message in the conversation, and
+        // ErrorDetail can hold whatever the provider chose to send back — untrusted text with no
+        // closed vocabulary, which is exactly what re-entering the model's own context as an
+        // assistant-authored line must not carry.
         { Status: ActionExecutionStatus.Failed, ErrorCode: "delivery_rejected" } =>
-            $"{summary} — the invoice was issued, but the provider would not deliver it"
-                + $"{Because(execution.ErrorDetail)}. Fix the recipient and send it again.",
+            $"{summary} — the invoice was issued, but the provider would not deliver it. "
+                + "Fix the recipient and send it again.",
 
         { Status: ActionExecutionStatus.Failed } =>
             $"{summary} — approved, but it did not go through. Nothing changed.",
@@ -53,14 +59,6 @@ public sealed class ActionNarrator(AppDbContext db, IClock clock)
 
         _ => $"{summary} — approved and running.",
     };
-
-    /// <summary>The provider's own words, when it gave any. Trimmed so the sentence stays one.</summary>
-    private const int MaxDetailLength = 120;
-
-    private static string Because(string? detail) =>
-        detail is not { Length: > 0 }
-            ? string.Empty
-            : $" ({(detail.Length <= MaxDetailLength ? detail : detail[..MaxDetailLength] + "…")})";
 
     /// <summary>
     /// Appends the outcome to the conversation, so the next turn's history contains what actually

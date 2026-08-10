@@ -173,8 +173,11 @@ public sealed class OutboxDispatcher(
             }
         }
 
-        await SettleExecutionAsync(delivery, cancellationToken);
-
+        // Delivery and outbox settle first, in their own save — and their own transaction. This is
+        // the authoritative record of what the provider actually did, and it must commit whether or
+        // not the execution's own projection of that fact goes on to save cleanly: a caller who has
+        // already told a provider "accepted" cannot let a second writer's stale copy of an unrelated
+        // row undo that record and send the same email again once the lease lapses.
         try
         {
             await db.SaveChangesAsync(cancellationToken);
@@ -183,13 +186,53 @@ public sealed class OutboxDispatcher(
         {
             // The lease says this worker owns the row, but the lease is an advisory pointer, not a
             // database-level lock — nothing stopped a worker whose lease had already lapsed from
-            // reaching this same line a second time. The concurrency token on the delivery and the
-            // execution is the actual backstop: whichever of the two writers gets here second finds
-            // the row has moved and must not overwrite what the first one already committed.
+            // reaching this same line a second time. The concurrency token on the delivery is the
+            // actual backstop: whichever of the two writers gets here second finds the row has moved
+            // and must not overwrite what the first one already committed.
             logger.LogWarning(
                 exception,
-                "Outbox message {MessageId} lost a race writing its outcome; a concurrent writer already settled it.",
+                "Outbox message {MessageId} lost a race writing its delivery outcome; a concurrent writer already settled it.",
                 message.Id);
+
+            DetachDirtyEntries();
+            return;
+        }
+
+        // The execution is a separate write on purpose: it is this dispatcher's own opinion about
+        // what the delivery above means for the execution waiting on it, and a conflict here — a
+        // live retry reconciling the same execution from its receipt, another settler doing the same
+        // thing from a different row — must not roll back the delivery this method just committed.
+        // ExecutionReconciler derives the identical verdict from the delivery, which is now durable
+        // either way.
+        await SettleExecutionAsync(delivery, cancellationToken);
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            logger.LogInformation(
+                exception,
+                "Outbox message {MessageId}'s execution projection lost a concurrency race; the reconciler will settle {ExecutionId} from the now-durable delivery.",
+                message.Id,
+                delivery.ExecutionId);
+
+            DetachDirtyEntries();
+        }
+    }
+
+    /// <summary>
+    /// Clears every entry this call dirtied, so a conflict on one message's write cannot resurface
+    /// on the next message's <c>SaveChangesAsync</c> in the same batch — never
+    /// <see cref="ChangeTracker.Clear"/>, which would also drop entries this batch has not reached
+    /// yet, since every claimed message shares this one context across the whole loop.
+    /// </summary>
+    private void DetachDirtyEntries()
+    {
+        foreach (var entry in db.ChangeTracker.Entries().Where(e => e.State != EntityState.Unchanged).ToList())
+        {
+            entry.State = EntityState.Detached;
         }
     }
 

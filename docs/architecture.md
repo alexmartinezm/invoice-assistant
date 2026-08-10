@@ -190,6 +190,7 @@ business change and the receipt that replays it commit together or not at all:
 | A twin still running | Waits on the row, then replays; `409 request_in_progress` past a bounded lock timeout |
 | The handler cannot get its own lock | `409 request_in_progress` — the timeout covers the handler's statements too |
 | The handler's optimistic check loses a race | `412 resource_changed` — discovered at save time, not treated as a server error |
+| A retry under the same key after that `412` | The identical `412`, replayed — not a second attempt against the resource's new state |
 | 5xx or an exception | Rolled back entirely; the key is free and the retry is a first attempt |
 
 The fingerprint is `SHA256(method, normalized path and query, body, If-Match)`, scoped by user.
@@ -205,6 +206,10 @@ it landed.
 An execution reading a `409 request_in_progress` off its own send treats it the same way it treats a
 lost transport answer — `Unknown`, not `Failed`. A twin still holding the key is not a refusal, and
 settling the execution as failed for it would be a false negative on a write that may yet land.
+`412 resource_changed` from the same race is the opposite case: a durable decision, not a "not yet",
+so the filter records a completed receipt for it the instant the losing transaction rolls back — a
+retry under that exact key replays the refusal rather than re-running the handler against whatever
+the resource has since become.
 
 `POST /api/invoices/{number}/send` answers **202** with a delivery record rather than 200. The
 ledger change is done; the email is not, and the status code says which. No handler under the
@@ -267,6 +272,9 @@ question and needs different machinery (ADR 009).
 | Recovery | A background pass settles from receipts and deliveries and releases what it cannot settle | It **never** re-executes: it holds no bearer token and must not acquire one |
 | Stalled reconciliation | An `Unknown` a pass could not settle defers its own next look rather than staying "due" | Otherwise it is reselected first on every pass, ahead of rows the pass could actually settle |
 | Concurrent settlers | `ActionExecution`, `InvoiceDelivery` and `OutboxMessage` carry Postgres's own row version as a concurrency token | The second writer to save gets a caught conflict and reloads, never a silent overwrite |
+| Effect vs. projection | The delivery/outbox outcome and the execution's own projection of it are two saves | A conflict on the second never rolls back the first — a caller that told a provider "accepted" cannot un-tell it |
+| A lost second save | Not read as "no evidence": the settler that lost it inspects what the row actually became before it decides anything | Prevents a healthy hand-off from being demoted, and a terminal row from being re-decided |
+| Human resume | An approval card's "Check again" replays the same authorized approve action under the same execution | Not a new capability — the same reclaim a caller could always attempt, surfaced where it was previously a dead end |
 | Referential integrity | Foreign keys tie an outbox row to its delivery, and a delivery to its invoice and execution | A row can no longer reference one that was never written |
 | Outbox delivery | Committed work is retried until settled or classified | **At-least-once dispatch**, not exactly-once |
 | Provider effect | Effectively-once *when the provider honours a stable key or exposes receipt lookup* | With neither, an ambiguous result stays `Unknown` and is not retried |

@@ -96,15 +96,15 @@ public sealed class DeliveryReconciler(
 
                 delivery.Delivered(receipt.ProviderMessageId, now);
                 await CompleteOutboxAsync(delivery.Id, now, cancellationToken);
-                await SettleExecutionAsync(delivery, receipt, cancellationToken);
-
                 activity?.SetTag("assistant.delivery_result", "delivered");
             }
 
-            // Saved per delivery, not batched at the end. This lease already keeps two reconcilers
-            // off the same row; the concurrency token is the backstop for the row it did not lease —
-            // the execution a live retry is settling at the same moment — and a conflict there must
-            // not roll back every other delivery this pass already resolved.
+            // Saved per delivery, not batched at the end, and before the execution below is even
+            // touched. This lease already keeps two reconcilers off the same row, but it is not what
+            // stops a live retry or the outbox dispatcher's own settle from touching the execution
+            // waiting on this delivery at the same moment — the concurrency token is that backstop,
+            // and a conflict it catches there must not be able to roll back the delivery and outbox
+            // outcome this save is the authoritative record of.
             try
             {
                 await db.SaveChangesAsync(cancellationToken);
@@ -116,21 +116,54 @@ public sealed class DeliveryReconciler(
                     "Delivery {DeliveryId} touched a row something else had already changed.",
                     delivery.Id);
 
-                // Only this iteration's entries — never ChangeTracker.Clear(), which would also
-                // detach every delivery still waiting its turn in this same batch and silently stop
-                // persisting the rest of the pass.
-                foreach (var entry in db.ChangeTracker.Entries().Where(e => e.State != EntityState.Unchanged).ToList())
-                {
-                    entry.State = EntityState.Detached;
-                }
-
+                DetachDirtyEntries(db);
                 continue;
+            }
+
+            if (receipt is not null)
+            {
+                // Separate again, for the same reason OutboxDispatcher's own settle is: this is the
+                // reconciler's opinion about what the delivery just committed above means for the
+                // execution waiting on it, and losing this specific save must not undo that delivery.
+                // ExecutionReconciler derives the identical verdict from the now-durable delivery if
+                // this save loses.
+                await SettleExecutionAsync(delivery, receipt, cancellationToken);
+
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException exception)
+                {
+                    logger.LogInformation(
+                        exception,
+                        "Delivery {DeliveryId}'s execution projection lost a concurrency race; the reconciler will settle {ExecutionId} from the now-durable delivery.",
+                        delivery.Id,
+                        delivery.ExecutionId);
+
+                    DetachDirtyEntries(db);
+                    continue;
+                }
             }
 
             settled++;
         }
 
         return settled;
+    }
+
+    /// <summary>
+    /// Clears every entry this call dirtied, so a conflict on one delivery's write cannot resurface
+    /// on the next delivery's <c>SaveChangesAsync</c> in the same batch — never
+    /// <see cref="ChangeTracker.Clear"/>, which would also drop entries this batch has not reached
+    /// yet, since every leased delivery shares this one context across the whole loop.
+    /// </summary>
+    private static void DetachDirtyEntries(AppDbContext db)
+    {
+        foreach (var entry in db.ChangeTracker.Entries().Where(e => e.State != EntityState.Unchanged).ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
     }
 
     private async Task CompleteOutboxAsync(Guid deliveryId, DateTimeOffset now, CancellationToken cancellationToken)

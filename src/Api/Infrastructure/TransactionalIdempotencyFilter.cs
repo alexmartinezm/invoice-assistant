@@ -168,7 +168,19 @@ public sealed class TransactionalIdempotencyFilter(
             // one thing, rather than one being a 412 and the other an unexplained 500.
             await transaction.RollbackAsync(CancellationToken.None);
             logger.LogInformation(exception, "A handler under key {Key} lost a concurrency race.", key);
-            return ResourceChanged(key);
+
+            var problem = ResourceChanged(key);
+
+            // Unlike request_in_progress, this is not a "not yet" — it is the durable decision the
+            // rest of this filter treats every other outcome as. The rollback above also undid the
+            // claim this request made at the top, which is right (nothing happened, so the row is
+            // free for a genuinely new request) but would otherwise leave this exact key able to
+            // replay into a *second* attempt against whatever the invoice now is, rather than
+            // reproducing the same refusal. Recording it here, outside the rolled-back transaction,
+            // is what keeps a retry under this key a replay instead of a second write.
+            await PersistTerminalReceiptAsync(key, userId, operation, requestHash, problem, CancellationToken.None);
+
+            return problem;
         }
         catch
         {
@@ -313,6 +325,48 @@ public sealed class TransactionalIdempotencyFilter(
         existing.RequestHash is { Length: > 0 } stored
             ? string.Equals(stored, requestHash, StringComparison.Ordinal)
             : string.Equals(existing.Operation, operation, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Records a terminal receipt for a key whose claim was just rolled back, so a retry under the
+    /// same key replays this exact answer instead of running the handler again against whatever the
+    /// resource now is. A fresh insert rather than an update to the claim <see cref="ClaimAsync"/>
+    /// made: that row no longer exists, since it lived in the transaction this call's caller just
+    /// rolled back.
+    /// </summary>
+    private async Task PersistTerminalReceiptAsync(
+        string key,
+        Guid userId,
+        string operation,
+        string requestHash,
+        IResult problem,
+        CancellationToken cancellationToken)
+    {
+        if (problem is not (IValueHttpResult { Value: { } value } and IStatusCodeHttpResult { StatusCode: { } status }))
+        {
+            // Every Problem(...) result satisfies this; defensive only, so a future change to that
+            // helper fails loudly here rather than silently skipping the receipt.
+            logger.LogError("A durable-412 problem result was {Result}, which cannot be recorded as a receipt.", problem.GetType().Name);
+            return;
+        }
+
+        var now = clock.UtcNow;
+        var responseJson = JsonSerializer.Serialize(value, value.GetType(), Json);
+
+        // ON CONFLICT DO NOTHING: the key is free again after the rollback above, so this is
+        // ordinarily a fresh row — but a second concurrent loser racing the very same key is not
+        // this filter's problem to solve twice, and whichever receipt lands first is an equally
+        // truthful record of "this key's write did not happen".
+        await db.Database.ExecuteSqlAsync(
+            $"""
+            INSERT INTO idempotency_keys
+                ("Id", "Key", "UserId", "Operation", "RequestHash", "StatusCode", "ResponseJson", "CreatedAt", "ExpiresAt", "CompletedAt")
+            VALUES
+                ({Guid.CreateVersion7()}, {key}, {userId}, {operation}, {requestHash}, {status}, {responseJson}::json,
+                 {now}, {now + IdempotencyRecord.Retention}, {now})
+            ON CONFLICT ("UserId", "Key") DO NOTHING
+            """,
+            cancellationToken);
+    }
 
     private Task CompleteAsync(
         string key,

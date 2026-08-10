@@ -5,6 +5,7 @@ using Api.Assistant.Tools;
 using Api.Domain;
 using Api.Features.Invoices;
 using Api.Infrastructure;
+using Api.Infrastructure.Delivery;
 using Api.Tests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
@@ -360,6 +361,221 @@ public class ConcurrencySafetyTests(DeliveryApiFactory factory) : IClassFixture<
         Assert.False(string.IsNullOrEmpty(code.GetString()));
     }
 
+    /// <summary>
+    /// A third-round finding: separating the delivery/outbox save from the execution's own settle
+    /// (so a conflict on the second cannot roll back the first) only closes the window if something
+    /// still owns the execution afterwards. This proves both halves — the delivery survives, and the
+    /// execution the conflict left behind is not abandoned.
+    /// </summary>
+    [Fact]
+    public async Task A_concurrency_conflict_settling_the_execution_does_not_undo_its_delivery()
+    {
+        var number = await CreateDraftAsync();
+        var actionId = await ProposeAsync("send_invoice", number);
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+        (await client.PostAsync($"/api/actions/{actionId}/approve", content: null)).Dispose();
+
+        var executionId = (await ExecutionAsync(actionId)).Id;
+        Assert.Equal(ActionExecutionStatus.Executing, (await ExecutionAsync(actionId)).Status);
+
+        var providerKey = (await DeliveryForAsync(number)).ProviderKey;
+
+        // A dispatcher scope whose own identity map is made to hold a stale copy of the execution
+        // before anything else touches the row — the same mechanism DurableActionTests and the
+        // second-round ConcurrencySafetyTests races use, applied here to the dispatcher's own settle
+        // step instead of a caller's.
+        using var dispatchScope = factory.Services.CreateScope();
+        var dispatchDb = dispatchScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        _ = await dispatchDb.ActionExecutions.SingleAsync(e => e.Id == executionId);
+
+        // Stands in for any other writer that touches this same execution between the dispatcher's
+        // own read and its write — a plain UPDATE is enough, since all that matters for reproducing
+        // the race is that Postgres's xmin moves under the dispatcher's stale snapshot.
+        await TouchExecutionAsync(executionId);
+
+        var dispatcher = dispatchScope.ServiceProvider.GetRequiredService<OutboxDispatcher>();
+        await dispatcher.DispatchBatchAsync(CancellationToken.None);
+
+        // The delivery and the outbox message are the authoritative record of what the provider did,
+        // and they are terminal regardless of what happened to the execution's own projection of
+        // that fact — proving the two saves are genuinely independent now.
+        Assert.Equal(InvoiceDeliveryStatus.Delivered, (await DeliveryForAsync(number)).Status);
+        Assert.Equal(1, factory.Provider.RequestsFor(providerKey));
+
+        // The execution's own save lost the race and was caught, not silently applied over the
+        // concurrent write.
+        Assert.NotEqual(ActionExecutionStatus.Succeeded, (await ExecutionAsync(actionId)).Status);
+
+        // And it is not abandoned: old enough that the reconciler's fallback sweep for a lost
+        // dispatcher settle picks it up, deriving the identical verdict from the now-durable
+        // delivery.
+        await RewindExecutionLastAttemptAsync(executionId, OutboxDispatcher.LeaseDuration + TimeSpan.FromSeconds(1));
+
+        Assert.True(await factory.RunExecutionReconcileAsync() >= 1);
+        Assert.Equal(ActionExecutionStatus.Succeeded, (await ExecutionAsync(actionId)).Status);
+    }
+
+    /// <summary>
+    /// A conflict settling one message's execution must not poison the shared context the batch
+    /// keeps dispatching with — the next message's own, unrelated save has to succeed cleanly.
+    /// </summary>
+    [Fact]
+    public async Task A_conflict_on_one_batch_message_does_not_contaminate_the_next()
+    {
+        var numberA = await CreateDraftAsync();
+        var actionIdA = await ProposeAsync("send_invoice", numberA);
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+        (await client.PostAsync($"/api/actions/{actionIdA}/approve", content: null)).Dispose();
+        var executionIdA = (await ExecutionAsync(actionIdA)).Id;
+
+        var numberB = await CreateDraftAsync();
+        var actionIdB = await ProposeAsync("send_invoice", numberB);
+        (await client.PostAsync($"/api/actions/{actionIdB}/approve", content: null)).Dispose();
+
+        using var dispatchScope = factory.Services.CreateScope();
+        var dispatchDb = dispatchScope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // Only A's execution is preloaded stale; B's is left alone so its own settle can go through
+        // cleanly — which is exactly what proves A's failed save did not leak into B's.
+        _ = await dispatchDb.ActionExecutions.SingleAsync(e => e.Id == executionIdA);
+        await TouchExecutionAsync(executionIdA);
+
+        var dispatcher = dispatchScope.ServiceProvider.GetRequiredService<OutboxDispatcher>();
+        await dispatcher.DispatchBatchAsync(CancellationToken.None);
+
+        Assert.Equal(InvoiceDeliveryStatus.Delivered, (await DeliveryForAsync(numberA)).Status);
+        Assert.NotEqual(ActionExecutionStatus.Succeeded, (await ExecutionAsync(actionIdA)).Status);
+
+        Assert.Equal(InvoiceDeliveryStatus.Delivered, (await DeliveryForAsync(numberB)).Status);
+        Assert.Equal(ActionExecutionStatus.Succeeded, (await ExecutionAsync(actionIdB)).Status);
+    }
+
+    /// <summary>
+    /// The reconciler's fallback sweep for an execution waiting on a delivery — added so a lost
+    /// dispatcher settle is not abandoned — must not fire on a delivery that is simply still in
+    /// flight. Before the guard this added, any execution old enough to match that sweep would have
+    /// been unconditionally marked <c>attempt_abandoned</c>, corrupting a perfectly healthy send.
+    /// </summary>
+    [Fact]
+    public async Task A_delivery_still_in_flight_is_left_alone_by_the_reconciler()
+    {
+        var number = await CreateDraftAsync();
+        var actionId = await ProposeAsync("send_invoice", number);
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+        (await client.PostAsync($"/api/actions/{actionId}/approve", content: null)).Dispose();
+
+        var executionId = (await ExecutionAsync(actionId)).Id;
+        Assert.Equal(ActionExecutionStatus.Executing, (await ExecutionAsync(actionId)).Status);
+
+        // Old enough for the fallback sweep to consider it, but the outbox was never run, so the
+        // delivery is genuinely still Queued — there is nothing to settle from.
+        await RewindExecutionLastAttemptAsync(executionId, OutboxDispatcher.LeaseDuration + TimeSpan.FromSeconds(1));
+
+        Assert.Equal(0, await factory.RunExecutionReconcileAsync());
+
+        var after = await ExecutionAsync(actionId);
+        Assert.Equal(ActionExecutionStatus.Executing, after.Status);
+        Assert.Null(after.NextAttemptAt);
+
+        // Dispatch it for real rather than leave a Pending outbox row behind: this fixture's
+        // database and fault injector are shared across the whole test class, and an
+        // undispatched message here would otherwise be free for a later test's own dispatch batch
+        // to pick up alongside its own — including stealing a fault armed for that test's send.
+        // This also proves the healthy path this guard exists to protect still settles normally.
+        await factory.RunOutboxAsync();
+        Assert.Equal(ActionExecutionStatus.Succeeded, (await ExecutionAsync(actionId)).Status);
+    }
+
+    /// <summary>
+    /// The <c>412</c> a late concurrency conflict answers is a durable decision, not a "not yet" —
+    /// so a retry under the same losing key must replay that exact refusal rather than re-running
+    /// the handler against whatever the invoice has since become.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_under_a_losing_key_from_a_save_time_race_replays_the_same_412()
+    {
+        const int writers = 10;
+        var number = await CreateAndSendAsync();
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+
+        var keys = Enumerable.Range(0, writers).Select(_ => Guid.CreateVersion7().ToString()).ToArray();
+        var dueDates = Enumerable.Range(0, writers).Select(index => $"2026-{10 + index % 2:00}-01").ToArray();
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, writers).Select(
+            index => client.PatchWriteAsync(
+                $"/api/invoices/{number}/due-date", new { dueDate = dueDates[index] }, key: keys[index])));
+
+        try
+        {
+            var loserIndex = Array.FindIndex(responses, r => r.StatusCode is HttpStatusCode.PreconditionFailed);
+            Assert.True(loserIndex >= 0, "Expected at least one of these writers to lose the race.");
+
+            var originalProblem = await responses[loserIndex].Content.ReadFromJsonAsync<ProblemPayload>();
+            Assert.Equal("resource_changed", originalProblem!.Code);
+
+            var dueDateAfterTheRace = await DueDateOfAsync(number);
+
+            using var retry = await client.PatchWriteAsync(
+                $"/api/invoices/{number}/due-date", new { dueDate = dueDates[loserIndex] }, key: keys[loserIndex]);
+
+            Assert.Equal(HttpStatusCode.PreconditionFailed, retry.StatusCode);
+            var retryProblem = await retry.Content.ReadFromJsonAsync<ProblemPayload>();
+            Assert.Equal("resource_changed", retryProblem!.Code);
+            Assert.Equal(originalProblem.Detail, retryProblem.Detail);
+
+            // Replayed, not re-executed: the invoice did not move again under a key that already
+            // answered 412 once. Before this fix the rollback also freed the key, and this exact
+            // retry would have run the handler again and could have silently changed the due date.
+            Assert.Equal(dueDateAfterTheRace, await DueDateOfAsync(number));
+        }
+        finally
+        {
+            foreach (var response in responses)
+            {
+                response.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The sentence for a rejected delivery states that the invoice was issued and the provider
+    /// refused it — it must not go on to interpolate the provider's own words, which are untrusted
+    /// text with no closed vocabulary and, unlike <c>errorCode</c>, are recorded as an
+    /// assistant-authored line in the conversation.
+    /// </summary>
+    [Fact]
+    public async Task A_delivery_rejection_message_does_not_carry_the_providers_raw_text()
+    {
+        var number = await CreateDraftAsync(recipient: string.Empty);
+        var actionId = await ProposeAsync("send_invoice", number);
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+        (await client.PostAsync($"/api/actions/{actionId}/approve", content: null)).Dispose();
+
+        await factory.RunOutboxAsync();
+
+        var execution = await ExecutionAsync(actionId);
+        Assert.Equal(ActionExecutionStatus.Failed, execution.Status);
+        Assert.Equal("delivery_rejected", execution.ErrorCode);
+
+        using var response = await client.GetAsync($"/api/action-executions/{execution.Id}");
+        response.EnsureSuccessStatusCode();
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var message = document.RootElement.GetProperty("message").GetString();
+
+        Assert.NotNull(message);
+        Assert.Contains("provider would not deliver", message);
+        // The provider's own text for this rejection names the code and the customer — neither
+        // belongs in a sentence the server hands back as its own and records as an assistant message.
+        Assert.DoesNotContain("no_recipient", message);
+        Assert.DoesNotContain("deliverable email address", message);
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     private async Task<Guid> CreateFailedExecutionAsync(HttpClient client)
@@ -477,6 +693,49 @@ public class ConcurrencySafetyTests(DeliveryApiFactory factory) : IClassFixture<
             UPDATE action_executions SET "AttemptExpiresAt" = {factory.Clock.UtcNow.AddMinutes(-1)}
             WHERE "Id" = {executionId}
             """);
+    }
+
+    /// <summary>
+    /// Stands in for any concurrent writer touching this execution's row. Reaches past the entity on
+    /// purpose: a plain <c>UPDATE</c> is all Postgres needs to move <c>xmin</c>, which is the only
+    /// thing that matters for reproducing a lost optimistic-concurrency race deterministically —
+    /// what the write actually changes is irrelevant to the mechanism being proved.
+    /// </summary>
+    private async Task TouchExecutionAsync(Guid executionId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        await db.Database.ExecuteSqlAsync(
+            $"""UPDATE action_executions SET "AttemptCount" = "AttemptCount" + 1 WHERE "Id" = {executionId}""");
+    }
+
+    /// <summary>
+    /// Pushes an execution's <c>LastAttemptAt</c> into the past, so it reads as old enough for the
+    /// reconciler's fallback sweep for a lost dispatcher settle to consider it. The frozen test clock
+    /// never advances on its own, so age has to be written directly.
+    /// </summary>
+    private async Task RewindExecutionLastAttemptAsync(Guid executionId, TimeSpan by)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        await db.Database.ExecuteSqlAsync(
+            $"""
+            UPDATE action_executions SET "LastAttemptAt" = {factory.Clock.UtcNow - by}
+            WHERE "Id" = {executionId}
+            """);
+    }
+
+    private async Task<DateOnly> DueDateOfAsync(string number)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        return await db.Invoices.AsNoTracking()
+            .Where(invoice => invoice.Number == number)
+            .Select(invoice => invoice.DueDate)
+            .SingleAsync();
     }
 
     /// <summary>

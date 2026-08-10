@@ -6,6 +6,12 @@ export type ApprovalState =
   | { status: 'working'; decision: 'approve' | 'reject' }
   /** Approved, and the outcome is still being established. The card keeps watching. */
   | { status: 'running'; executionId: string; execution: ExecutionStatus; message: string }
+  /**
+   * Still unsettled after the watch window closed. Not a failure and not "done" — a card stuck
+   * here forever with no button was the gap: `Unknown` promises a person can resume it, and until
+   * now nothing in the product let them.
+   */
+  | { status: 'stalled'; executionId: string; message: string }
   | { status: 'resolved'; message: string; failed: boolean };
 
 export interface PendingApproval {
@@ -50,6 +56,15 @@ export function ApprovalCard({
 
   if (approval.state.status === 'running') {
     return <ExecutionNote state={approval.state} />;
+  }
+
+  if (approval.state.status === 'stalled') {
+    return (
+      <StalledNote
+        state={approval.state}
+        onCheckAgain={() => onDecide(approval.actionId, 'approve')}
+      />
+    );
   }
 
   const inFlight = approval.state.status === 'working' ? approval.state.decision : null;
@@ -152,6 +167,51 @@ function ExecutionNote({ state }: { state: Extract<ApprovalState, { status: 'run
       <p className="text-ink-faint numeric px-3 pb-3 text-[11px] break-all">
         execution {state.executionId}
       </p>
+    </section>
+  );
+}
+
+/**
+ * Approved, still unsettled, and this tab has stopped polling for it.
+ *
+ * The state `ExecutionNote` never had a way out of: `Unknown` is documented as a person's call to
+ * make, but nothing gave them a next action once the watch window closed, so the card just went
+ * quiet on "executing" forever. "Check again" is not a new capability — it is `onDecide`'s own
+ * approve action, replayed under the same execution's idempotency key, which is exactly what makes
+ * it safe to offer here.
+ */
+function StalledNote({
+  state,
+  onCheckAgain,
+}: {
+  state: Extract<ApprovalState, { status: 'stalled' }>;
+  onCheckAgain: () => void;
+}) {
+  return (
+    <section
+      aria-label="Outcome still unconfirmed"
+      role="status"
+      className="border-rule bg-raised overflow-hidden rounded-lg border"
+    >
+      <header className="border-rule bg-sunken text-ink-soft flex items-center gap-2 border-b px-3 py-2">
+        <span aria-hidden="true" className="bg-ink-soft h-1.5 w-1.5 rounded-full" />
+        <h3 className="flex-1 text-xs font-semibold tracking-wide uppercase">Still unconfirmed</h3>
+      </header>
+
+      <p className="px-3 py-3 text-sm leading-relaxed break-words">{state.message}</p>
+
+      <div className="border-rule flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
+        <p className="text-ink-faint numeric text-[11px] break-all">
+          execution {state.executionId}
+        </p>
+        <button
+          type="button"
+          onClick={onCheckAgain}
+          className="border-rule hover:bg-sunken rounded-md border px-3 py-1.5 text-sm transition-colors"
+        >
+          Check again
+        </button>
+      </div>
     </section>
   );
 }

@@ -57,15 +57,17 @@ export function useActionOutcome(token: string) {
       }
 
       const deadline = Date.now() + watchWindowMs;
+      let lastMessage = outcome.message;
 
       const poll = async () => {
         try {
           const execution = await api.actionExecution(token, executionId);
+          lastMessage = execution.message ?? lastMessage;
 
           if (!unsettled.has(execution.status)) {
             onState({
               status: 'resolved',
-              message: execution.message ?? outcome.message,
+              message: lastMessage,
               failed: execution.status === 'failed',
             });
             timers.current.delete(actionId);
@@ -77,7 +79,7 @@ export function useActionOutcome(token: string) {
             status: 'running',
             executionId,
             execution: execution.status,
-            message: execution.message ?? outcome.message,
+            message: lastMessage,
           });
         } catch (cause) {
           // A 404 means it is not ours to watch; anything else may well succeed next time. Neither
@@ -94,7 +96,14 @@ export function useActionOutcome(token: string) {
             window.setTimeout(() => void poll(), pollIntervalMs),
           );
         } else {
+          // The watch window is a load bound, not an answer: an execution still unsettled here has
+          // not resolved to anything, and a card frozen on "executing" with no way to check again is
+          // a dead end for a state the server itself says a person may need to act on. Approving
+          // again is the same authorized action as the first click, replayed under the same
+          // execution — never a second write.
           timers.current.delete(actionId);
+          onState({ status: 'stalled', executionId, message: lastMessage });
+          rerender();
         }
       };
 
