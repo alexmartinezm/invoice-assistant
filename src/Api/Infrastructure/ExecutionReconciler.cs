@@ -86,6 +86,7 @@ public sealed class ExecutionReconciler(
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var executor = scope.ServiceProvider.GetRequiredService<ActionExecutor>();
         var narrator = scope.ServiceProvider.GetRequiredService<ActionNarrator>();
+        var faults = scope.ServiceProvider.GetRequiredService<IFaultInjector>();
         var now = clock.UtcNow;
 
         var stalled = await db.ActionExecutions
@@ -128,6 +129,12 @@ public sealed class ExecutionReconciler(
             activity?.SetTag("assistant.evidence", "idempotency_receipt");
 
             var moved = true;
+
+            // The row is selected but not yet settled. In production this is a no-op; a test uses it
+            // to move the row out from under this pass's stale snapshot — a live retry settling it to
+            // AwaitDelivery, or another settler taking it terminal — so the branch below is exercised
+            // on a snapshot that has genuinely lost a race, not merely on a hand-arranged state.
+            faults.Reach(FaultCheckpoint.AfterReconcilerSelectedBeforeSettle);
 
             if (await SettleFromDeliveryAsync(db, execution, cancellationToken)
                 || await executor.TryReconcileFromReceiptAsync(execution, cancellationToken))

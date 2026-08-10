@@ -490,6 +490,102 @@ public class ConcurrencySafetyTests(DeliveryApiFactory factory) : IClassFixture<
     }
 
     /// <summary>
+    /// A reconcile pass that selects an execution while it is <c>Unknown</c>, and has it settled to a
+    /// valid <c>AwaitDelivery</c> by a live retry before the pass can write, must not read its own
+    /// lost race as "no evidence" and demote that healthy hand-off to <c>attempt_abandoned</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the exact fall-through the third audit asked for: the round-two race test proved two
+    /// <c>TryReconcileFromReceiptAsync</c> calls cannot both win, but never passed the loser back
+    /// through <c>ExecutionReconciler.ReconcileAsync</c> to observe what it then did with the
+    /// reloaded row. The fault checkpoint pins the interleave deterministically — the live retry runs
+    /// after this pass has loaded the row but before it settles it — so the branch runs on a snapshot
+    /// that has genuinely lost, not one arranged by hand.
+    /// </remarks>
+    [Fact]
+    public async Task A_reconcile_pass_does_not_demote_an_execution_a_live_retry_settled_under_it()
+    {
+        var number = await CreateDraftAsync();
+        var actionId = await ProposeAsync("send_invoice", number);
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+
+        // Invoice Sent, delivery Queued, a receipt carrying the 202 and the delivery id — and the
+        // caller's answer lost, so the execution is Unknown with that receipt behind it.
+        factory.Faults.ThrowOnce(FaultCheckpoint.AfterBusinessTransactionCommitBeforeResponse);
+        (await client.PostAsync($"/api/actions/{actionId}/approve", content: null)).Dispose();
+
+        var executionId = (await ExecutionAsync(actionId)).Id;
+        Assert.Equal(ActionExecutionStatus.Unknown, (await ExecutionAsync(actionId)).Status);
+
+        // Make the reconciler willing to select it (its own reconcile deadline is otherwise in the
+        // future under the frozen clock).
+        await ParkExecutionAsUnknownAsync(executionId);
+
+        // The instant the pass has selected this row but not yet settled it, a live retry reconciles
+        // it from the receipt to AwaitDelivery — moving the row version the pass is holding.
+        factory.Faults.RunOnce(FaultCheckpoint.AfterReconcilerSelectedBeforeSettle, async () =>
+        {
+            using var scope = factory.Services.CreateScope();
+            var (executor, execution) = await ReconcilerForAsync(scope, executionId);
+            await executor.TryReconcileFromReceiptAsync(execution, CancellationToken.None);
+        });
+
+        await factory.RunExecutionReconcileAsync();
+
+        // The pass's own receipt reconcile lost the race and reloaded the row to Executing; it must
+        // have left it there, not marked it attempt_abandoned. Before the fix, the reconciler read
+        // its `false` as "no evidence" and, seeing an Executing status, degraded a valid AwaitDelivery
+        // straight back to Unknown.
+        var after = await ExecutionAsync(actionId);
+        Assert.Equal(ActionExecutionStatus.Executing, after.Status);
+        Assert.NotNull(after.DeliveryId);
+        Assert.NotEqual("attempt_abandoned", after.ErrorCode);
+
+        // Drain the outbox row this send left Pending: in this shared fixture an undispatched row is
+        // free for a later test's own dispatch batch to claim — and, worse, to consume a fault that
+        // test armed for its own send. Same discipline as the fallback-sweep test above.
+        await factory.RunOutboxAsync();
+    }
+
+    /// <summary>
+    /// When a reconcile pass settles one row — queueing its closing line — and then loses the race to
+    /// save it, that rolled-back closing line must not survive on the shared context and be inserted
+    /// by the *next* row's save. The second audit's fix detached only the execution; this proves the
+    /// whole losing unit of work, closing line included, is now discarded.
+    /// </summary>
+    [Fact]
+    public async Task A_closing_line_from_a_lost_reconcile_does_not_leak_into_the_next_rows_save()
+    {
+        // Two executions in the N1-lost-projection shape: waiting on a delivery the provider has
+        // taken, but with the execution's own projection of that never saved — so the reconciler's
+        // fallback sweep owns settling them. A is created first, so the batch (ordered by CreatedAt)
+        // processes it first, which is the ordering under which the leak can happen at all.
+        var (_, execA) = await AwaitingDeliveredExecutionAsync();
+        var (actionB, execB) = await AwaitingDeliveredExecutionAsync();
+
+        var beforeA = await MessageCountAsync(execA.ConversationId);
+        var beforeB = await MessageCountAsync(execB.ConversationId);
+
+        // As soon as the pass starts touching rows, settle A out from under it, so A's own settle —
+        // and the closing line it queues — land on a snapshot that has already lost the race and its
+        // save is rolled back.
+        factory.Faults.RunOnce(
+            FaultCheckpoint.AfterReconcilerSelectedBeforeSettle, () => SettleExecutionSucceededAsync(execA.Id));
+
+        await factory.RunExecutionReconcileAsync();
+
+        // A's conversation gains nothing: its closing line went down with the rolled-back save. B's
+        // gains exactly its own. Before the fix, A's orphaned Message rode along on B's save and
+        // landed in A's conversation, so this asserted delta would have been 1.
+        Assert.Equal(beforeA, await MessageCountAsync(execA.ConversationId));
+        Assert.Equal(beforeB + 1, await MessageCountAsync(execB.ConversationId));
+
+        // B settled cleanly on the same shared context, uncontaminated by A's failed save.
+        Assert.Equal(ActionExecutionStatus.Succeeded, (await ExecutionAsync(actionB)).Status);
+    }
+
+    /// <summary>
     /// The <c>412</c> a late concurrency conflict answers is a durable decision, not a "not yet" —
     /// so a retry under the same losing key must replay that exact refusal rather than re-running
     /// the handler against whatever the invoice has since become.
@@ -777,6 +873,86 @@ public class ConcurrencySafetyTests(DeliveryApiFactory factory) : IClassFixture<
                 "AttemptExpiresAt" = NULL
             WHERE "Id" = {executionId}
             """);
+    }
+
+    /// <summary>
+    /// A send whose execution is waiting on a delivery the provider has already taken, but whose own
+    /// projection of that was never saved — the N1-lost-projection shape — and aged past the lease so
+    /// the reconciler's fallback sweep will select it.
+    /// </summary>
+    private async Task<(Guid ActionId, ActionExecution Execution)> AwaitingDeliveredExecutionAsync()
+    {
+        var number = await CreateDraftAsync();
+        var actionId = await ProposeAsync("send_invoice", number);
+
+        using var client = await factory.ClientForAsync("carlos@demo");
+        (await client.PostAsync($"/api/actions/{actionId}/approve", content: null)).EnsureSuccessStatusCode();
+
+        var execution = await ExecutionAsync(actionId);
+        Assert.Equal(ActionExecutionStatus.Executing, execution.Status);
+
+        // The delivery is forced terminal without settling the execution (the outbox's second save
+        // having lost), and the execution is aged past the lease so the fallback sweep considers it.
+        await MarkDeliveryDeliveredAsync(number);
+        await RewindExecutionLastAttemptAsync(execution.Id, OutboxDispatcher.LeaseDuration + TimeSpan.FromSeconds(1));
+
+        return (actionId, execution);
+    }
+
+    private async Task MarkDeliveryDeliveredAsync(string number)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var providerMessageId = $"demo-{Guid.CreateVersion7():N}";
+
+        await db.Database.ExecuteSqlAsync(
+            $"""
+            UPDATE invoice_deliveries
+            SET "Status" = 'Delivered', "ProviderMessageId" = {providerMessageId}, "SettledAt" = {factory.Clock.UtcNow}
+            WHERE "InvoiceNumber" = {number}
+            """);
+
+        // Complete the outbox row too: the provider took the message, so it is done. Leaving it
+        // Pending would let a later test's own dispatch batch claim it in this shared fixture — and,
+        // worse, steal a fault that test armed for its own send.
+        await db.Database.ExecuteSqlAsync(
+            $"""
+            UPDATE outbox_messages
+            SET "Status" = 'Completed', "CompletedAt" = {factory.Clock.UtcNow}
+            WHERE "DeliveryId" IN (SELECT "Id" FROM invoice_deliveries WHERE "InvoiceNumber" = {number})
+            """);
+    }
+
+    /// <summary>
+    /// Settles an execution terminal by raw SQL — a stand-in for any concurrent winner, whose only
+    /// job here is to move the row version so the reconciler's own save loses.
+    /// </summary>
+    private async Task SettleExecutionSucceededAsync(Guid executionId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        await db.Database.ExecuteSqlAsync(
+            $"""
+            UPDATE action_executions
+            SET "Status" = 'Succeeded', "ResultStatusCode" = 200, "CompletedAt" = {factory.Clock.UtcNow},
+                "NextAttemptAt" = NULL, "AttemptExpiresAt" = NULL
+            WHERE "Id" = {executionId}
+            """);
+    }
+
+    private async Task<int> MessageCountAsync(Guid? conversationId)
+    {
+        if (conversationId is not { } id)
+        {
+            return 0;
+        }
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        return await db.Set<Message>().CountAsync(message => message.ConversationId == id);
     }
 
     private async Task<PendingAction> ActionAsync(Guid actionId)

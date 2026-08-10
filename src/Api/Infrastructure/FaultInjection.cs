@@ -28,6 +28,12 @@ public enum FaultCheckpoint
 
     /// <summary>The provider's answer is in hand; the execution has not been updated.</summary>
     AfterProviderReceiptBeforeExecutionFinalized,
+
+    /// <summary>
+    /// A reconcile pass has selected an execution and has not yet settled it. The window in which a
+    /// live retry or the outbox can move the row out from under this pass's stale snapshot.
+    /// </summary>
+    AfterReconcilerSelectedBeforeSettle,
 }
 
 /// <summary>

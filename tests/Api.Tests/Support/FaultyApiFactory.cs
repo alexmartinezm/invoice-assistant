@@ -40,6 +40,7 @@ public sealed class ScriptedFaults : IFaultInjector
     private readonly Lock _gate = new();
     private readonly HashSet<FaultCheckpoint> _armed = [];
     private readonly List<FaultCheckpoint> _reached = [];
+    private readonly Dictionary<FaultCheckpoint, Func<Task>> _actions = [];
 
     /// <summary>Every checkpoint the code has walked through, in order. Useful when a test is lying.</summary>
     public IReadOnlyList<FaultCheckpoint> Reached
@@ -61,27 +62,55 @@ public sealed class ScriptedFaults : IFaultInjector
         }
     }
 
+    /// <summary>
+    /// Runs an action, once, the next time this checkpoint is reached — the deterministic way to
+    /// interleave a concurrent writer at an exact point rather than with a sleep. The action runs on
+    /// a plain thread-pool thread (via <see cref="Task.Run(Func{Task})"/>) so its own awaits never
+    /// resume on the reached thread's synchronization context, which is what would otherwise deadlock
+    /// when the reaching code is blocked waiting on it. It must use its own <c>DbContext</c> scope,
+    /// never the one whose pass is reaching this checkpoint.
+    /// </summary>
+    public void RunOnce(FaultCheckpoint checkpoint, Func<Task> action)
+    {
+        lock (_gate)
+        {
+            _actions[checkpoint] = action;
+        }
+    }
+
     public void Disarm()
     {
         lock (_gate)
         {
             _armed.Clear();
             _reached.Clear();
+            _actions.Clear();
         }
     }
 
     public void Reach(FaultCheckpoint checkpoint)
     {
+        Func<Task>? action;
+        bool armed;
+
         lock (_gate)
         {
             _reached.Add(checkpoint);
-
-            if (!_armed.Remove(checkpoint))
-            {
-                return;
-            }
+            _actions.Remove(checkpoint, out action);
+            armed = _armed.Remove(checkpoint);
         }
 
-        throw new InjectedFaultException(checkpoint);
+        // Outside the lock: the action does its own I/O and could itself reach checkpoints. Blocking
+        // here is deliberate — the reaching pass must not proceed until the interleaved writer has
+        // committed, which is the whole point of pinning the race to this line.
+        if (action is not null)
+        {
+            Task.Run(action).GetAwaiter().GetResult();
+        }
+
+        if (armed)
+        {
+            throw new InjectedFaultException(checkpoint);
+        }
     }
 }
