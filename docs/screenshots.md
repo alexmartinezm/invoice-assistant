@@ -64,6 +64,13 @@ identity, against the same REST API a person would have used.
 
 ![Invoice 2026-0039 sent after approval, confirmed with the resulting customer and amount](screenshots/assistant-approved-write.png)
 
+Approving `send_invoice` is not the same as confirming delivery — the ledger change commits
+immediately, the email is a separate effect handed to an outbox, and the card keeps polling until
+that settles too. Left unresolved past the watch window, it does not just go quiet: "Check again"
+replays the same authorized approval under the same execution, never a second write.
+
+![An execution still unconfirmed after the watch window, with a Check again button](screenshots/assistant-outcome-unconfirmed.png)
+
 A Viewer's write never becomes a proposal at all. The policy denies it outright, the audit log
 records it, and the model is left to explain a decision it did not make and could not have avoided.
 

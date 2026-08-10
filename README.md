@@ -52,8 +52,9 @@ day's spend checked against the kill switch before each one.
 
 The whole tour is in [**docs/screenshots.md**](docs/screenshots.md): the invoice detail and the
 aging buckets, the tool catalog a Viewer can open from the drawer, an approved settlement still
-refused by the API's own ceiling, a Viewer's write denied by policy, and the per-turn limit
-stopping a bulk cancellation after its first call.
+refused by the API's own ceiling, an approval left unconfirmed past its watch window with a way to
+check again, a Viewer's write denied by policy, and the per-turn limit stopping a bulk cancellation
+after its first call.
 
 ## Repo structure
 
