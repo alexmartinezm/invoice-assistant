@@ -1,6 +1,6 @@
-import type { InvoiceDetail } from '../api/types';
-import { StatusPill } from '../components/Pills';
-import { appConfig, formatDate, formatMoney } from '../format';
+import type { InvoiceDeliveryView, InvoiceDetail } from '../api/types';
+import { DeliveryPill, StatusPill } from '../components/Pills';
+import { appConfig, formatDate, formatDateTime, formatMoney } from '../format';
 
 export function InvoiceDetailPanel({
   invoice,
@@ -11,7 +11,7 @@ export function InvoiceDetailPanel({
 }) {
   return (
     <section aria-labelledby="invoice-detail" className="card slide-in overflow-hidden">
-      <header className="border-rule bg-sunken flex items-start gap-3 border-b px-5 py-4">
+      <header className="border-rule bg-sunken flex flex-wrap items-start gap-3 border-b px-5 py-4">
         <div className="flex-1">
           <h2 id="invoice-detail" className="numeric text-lg">
             {invoice.number}
@@ -20,7 +20,10 @@ export function InvoiceDetailPanel({
             {invoice.customerName} · <span className="numeric">{invoice.customerTaxId}</span>
           </p>
         </div>
-        <StatusPill status={invoice.status} isOverdue={invoice.isOverdue} />
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill status={invoice.status} isOverdue={invoice.isOverdue} />
+          {invoice.delivery && <DeliveryPill status={invoice.delivery.status} />}
+        </div>
         <button
           type="button"
           onClick={onClose}
@@ -30,6 +33,14 @@ export function InvoiceDetailPanel({
           ×
         </button>
       </header>
+
+      {/* A fact about somebody else's system, stated separately from the ledger above it. Sent and
+          Failed together is not a contradiction to soften — it is what actually happened. */}
+      {invoice.delivery && (
+        <p className="border-rule bg-sunken text-ink-soft border-b px-5 py-2 text-xs leading-relaxed">
+          {deliverySummary(invoice.delivery)}
+        </p>
+      )}
 
       <dl className="border-rule grid grid-cols-2 gap-y-2 border-b px-5 py-4 text-sm sm:grid-cols-4">
         <Field label="Issued" value={formatDate(invoice.issueDate)} />
@@ -108,4 +119,32 @@ function Field({
       <dd className={`numeric mt-0.5 ${emphasis ? 'text-aging-over' : ''}`}>{value}</dd>
     </div>
   );
+}
+
+/**
+ * What the delivery status means, in a sentence rather than a word. Keyed on status only, never on
+ * the provider's own error text: that text was never meant for a reader on this side of the API and
+ * can say more than it should — see `ActionExecutionView.errorDetail`, which stopped shipping the
+ * same thing for the same reason.
+ */
+function deliverySummary(delivery: InvoiceDeliveryView): string {
+  const attempts = delivery.attempts > 1 ? ` after ${delivery.attempts} attempts` : '';
+
+  switch (delivery.status) {
+    case 'queued':
+      return 'Waiting to be sent.';
+    case 'delivered':
+      return delivery.settledAt
+        ? `Delivered ${formatDateTime(delivery.settledAt)}${attempts}.`
+        : `Delivered${attempts}.`;
+    case 'failed':
+      // Authoritative, not a hiccup: the provider refused it, and resending would be refused
+      // identically. The invoice stays Sent — the ledger change is real — so the sentence says
+      // both things rather than letting "failed" read as "nothing happened".
+      return `The provider would not deliver this invoice${attempts}. The invoice was issued, but the customer has not received it.`;
+    case 'unknown':
+      return `Waiting to confirm with the provider whether this reached the customer${attempts}.`;
+    default:
+      return delivery.status;
+  }
 }

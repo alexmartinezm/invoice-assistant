@@ -92,7 +92,7 @@ public class InvoicingConfigurationTests(UnitedStatesApiFactory factory)
     {
         using var client = await factory.ClientForAsync("carlos@demo");
 
-        var response = await client.PostAsJsonAsync("/api/invoices", new
+        var response = await client.PostWriteAsync("/api/invoices", new
         {
             customerName = "Fremont Software",
             lines = new[] { new { description = "Development", quantity = 1, unitPrice = 100m } },
@@ -111,7 +111,7 @@ public class InvoicingConfigurationTests(UnitedStatesApiFactory factory)
     {
         using var client = await factory.ClientForAsync("carlos@demo");
 
-        var created = await client.PostAsJsonAsync("/api/invoices", new
+        var created = await client.PostWriteAsync("/api/invoices", new
         {
             customerName = "Harborview Logistics",
             lines = new[] { new { description = "Development", quantity = 1, unitPrice = 800m } },
@@ -119,11 +119,11 @@ public class InvoicingConfigurationTests(UnitedStatesApiFactory factory)
         created.EnsureSuccessStatusCode();
         var invoice = await created.Content.ReadFromJsonAsync<InvoiceDetail>();
 
-        var sent = await client.PostAsync($"/api/invoices/{invoice!.Number}/send", content: null);
+        var sent = await client.PostWriteAsync($"/api/invoices/{invoice!.Number}/send");
         sent.EnsureSuccessStatusCode();
 
         // 856.00 clears the default 1,000 ceiling but not the 500 configured here.
-        var refused = await client.PostAsync($"/api/invoices/{invoice.Number}/mark-paid", content: null);
+        var refused = await client.PostWriteAsync($"/api/invoices/{invoice.Number}/mark-paid");
 
         Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
         var problem = await refused.Content.ReadFromJsonAsync<ProblemPayload>();

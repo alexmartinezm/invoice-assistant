@@ -70,8 +70,8 @@ file it deploys should not publish ports or know its own domain. That is what
 
 Point `USAGE_DAILY_BUDGET_EUR` at a number you are willing to lose before you hand the URL out. It
 is a global daily cap in euros, checked before the turn starts and before every model call inside
-it, and it is the thing that makes a public demo with a real key in it safe to leave running — a
-per-user rate limit does nothing about a scraper with many IPs. See
+it, and it limits the cost of leaving a public demo with a real key running. A per-user rate limit
+does nothing about a scraper with many IPs. See
 [ADR 008](adr/008-cost-accounting-and-the-spend-kill-switch.md).
 
 ### Using a database Coolify manages
@@ -99,7 +99,7 @@ variables the Coolify file sets for you: `ASPNETCORE_FORWARDEDHEADERS_ENABLED=tr
 the real scheme and client IP rather than the proxy's, and `ASSISTANT_API_BASE_URL=http://localhost:8080`
 for the reason in the next section.
 
-## The one deployment-specific setting worth understanding
+## Self-calls behind a proxy
 
 The assistant's tools do not call the domain layer directly. They go over HTTP to our own REST API
 carrying the caller's bearer token, so endpoint authorization applies to the assistant exactly as it
@@ -141,8 +141,8 @@ call to the model tagged with model, tokens, latency and cost. Metrics arrive on
 under the `InvoiceAssistant.Assistant` meter — model calls, tokens by direction, spend, budget
 rejections and unpriced calls — which is the only place the kill switch's counters are visible.
 
-One thing to know before you open the viewer: `assistant.turn` is a **sibling** of the tool and model
-spans rather than their parent, so a turn does not collapse into one subtree. Everything shares the
+`assistant.turn` is a **sibling** of the tool and model spans rather than their parent, so a turn does
+not collapse into one subtree. Everything shares the
 request's trace id — the one the chat footer shows — so nothing is lost and correlation works. The
 reason, and what fixing it would take, is in [`architecture.md`](architecture.md#cost-traces-and-the-kill-switch).
 
@@ -153,9 +153,9 @@ curl https://invoices.example.com/health                  # {"status":"ok"}
 curl https://invoices.example.com/api/auth/demo-users     # the three seeded users
 ```
 
-Then log in as `ana@demo` / `demo1234` and ask the assistant something that needs a tool, like
-"which invoices are overdue?" — that exercises the self-call above, which is the part a proxy can
-break without anything else looking wrong.
+Then log in as `ana@demo` / `demo1234` and ask the assistant something that needs a tool, such as
+"which invoices are overdue?". This exercises the self-call that a proxy can break while the rest of
+the app still looks healthy.
 
 | Symptom | Cause |
 |---|---|

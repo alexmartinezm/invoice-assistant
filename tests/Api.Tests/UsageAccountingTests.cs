@@ -11,7 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Api.Tests;
 
 /// <summary>
-/// The cost ledger (F4): every model call leaves a priced row in <c>usage_records</c>, and the
+/// The cost ledger: every model call leaves a priced row in <c>usage_records</c>, and the
 /// usage endpoints report those rows to their owner — or to an Admin, who sees everyone's.
 /// </summary>
 /// <remarks>

@@ -20,8 +20,8 @@ public sealed record ChatRequest(Guid? ConversationId, string Message);
 /// </summary>
 /// <remarks>
 /// Tool calls are executed by <c>Microsoft.Extensions.AI</c>'s function-invoking client, and each
-/// tool goes over HTTP to our own API with the caller's token. F2 inserts the policy gate between
-/// the model's tool call and its execution; F4 adds usage accounting around the model call.
+/// tool goes over HTTP to our own API with the caller's token. The policy gate sits between the
+/// model's tool call and its execution; usage accounting wraps the model call.
 /// </remarks>
 public sealed class ChatOrchestrator(
     IChatClient chatClient,

@@ -167,6 +167,13 @@ public sealed class EvalRunner(EvalHost host)
             .Where(facts.NewAuditDecisions.Contains)
             .Select(decision => $"expected no audit event with decision '{decision}'"));
 
+        if (expect.ExecutionsCreated is { } executions && facts.NewExecutionStatuses.Count != executions)
+        {
+            failures.Add(
+                $"expected {executions} execution(s) to be created, the database shows "
+                + $"{facts.NewExecutionStatuses.Count}");
+        }
+
         return failures.Count == 0
             ? null
             : $"{string.Join("; ", failures)}.\n{Describe(calls, facts)}";
@@ -229,6 +236,7 @@ public sealed class EvalRunner(EvalHost host)
 
         return $"Tool calls: {toolCalls}. Writes: {facts.WritesExecuted}. "
             + $"Pending actions: [{string.Join(", ", facts.NewPendingActionTools)}]. "
-            + $"Audit decisions: [{string.Join(", ", facts.NewAuditDecisions)}].";
+            + $"Audit decisions: [{string.Join(", ", facts.NewAuditDecisions)}]. "
+            + $"Executions: [{string.Join(", ", facts.NewExecutionStatuses)}].";
     }
 }

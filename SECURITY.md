@@ -23,8 +23,8 @@ Some things that look like findings are deliberate, and are documented as such:
 Open a [private security advisory](https://github.com/alexmartinezm/invoice-assistant/security/advisories/new).
 Please do not open a public issue for anything you believe is exploitable.
 
-Most interesting to hear about is anything that breaks one of the invariants the repo is built to
-demonstrate — they are listed in [AGENTS.md](AGENTS.md) and the reasoning is in
+Please report anything that breaks one of the invariants the repo is built to demonstrate. They are
+listed in [AGENTS.md](AGENTS.md), and the reasoning is in
 [`docs/adr/`](docs/adr/):
 
 - a write reaching the database without a policy `allow` or a human approval recorded in
@@ -33,5 +33,5 @@ demonstrate — they are listed in [AGENTS.md](AGENTS.md) and the reasoning is i
 - a prompt that gets a tool call past `policies.json`, the per-turn limits, or the endpoint's own
   role and amount checks.
 
-A working example against a local `docker compose up` is worth more than a description, and the
-eval cases in `evals/cases/` are the shape those examples take here.
+Please include a working example against a local `docker compose up` when possible. The eval cases in
+`evals/cases/` show the expected format.

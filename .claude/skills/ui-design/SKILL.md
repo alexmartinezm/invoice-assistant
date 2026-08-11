@@ -1,6 +1,6 @@
 ---
 name: ui-design
-description: The UI design language of invoice-assistant and the rules that keep it coherent. Use this skill whenever you touch anything the user sees in src/Web — building or restyling a page, a component, a card, a table, a form, a chart or an empty state; picking colours, type, spacing or motion; adding the F2 approval and block cards or the F4 usage page; or reviewing frontend work for quality. Use it even when the request sounds purely functional ("add a button to reject a pending action", "show the token cost"), because every visible change either holds this design language together or quietly erodes it.
+description: The UI design language of invoice-assistant and the rules that keep it coherent. Use this skill whenever you touch anything the user sees in src/Web — building or restyling a page, a component, a card, a table, a form, a chart or an empty state; picking colours, type, spacing or motion; adding the approval and block cards or the usage page; or reviewing frontend work for quality. Use it even when the request sounds purely functional ("add a button to reject a pending action", "show the token cost"), because every visible change either holds this design language together or quietly erodes it.
 ---
 
 # UI design · invoice-assistant
@@ -75,14 +75,14 @@ from a CDN, because the demo has to run in one container with no network.
 | Lines | `rule`, `rule-strong` | Hairline borders; `rule-strong` only when a border must be read as an edge |
 | Accent | `accent`, `accent-soft`, `accent-ink` | The single brand colour: primary actions, selection, collected money |
 | Aging | `aging-current`, `aging-30`, `aging-60`, `aging-over` | **Only** how late money is |
-| Danger | `danger`, `danger-soft` | Failures and refusals: an error, and from F2 a policy-denied action |
+| Danger | `danger`, `danger-soft` | Failures and refusals: an error, or a policy-denied action |
 
 The aging ramp is a data scale, not a palette. Reaching for `aging-over` because you want "a red" —
 on a delete button, a validation message, an unrelated warning — breaks the one visual rule the app
 actually teaches: that amber-through-red means overdue and nothing else. `danger` exists so you
-never have to. This distinction is about to earn its keep: F2's block card is a refusal, and if it
-borrowed the ramp then red in this app would mean both "very overdue" and "blocked", which is
-exactly the ambiguity the separation prevents.
+never have to. The distinction earns its keep in the block card, which is a refusal: if it borrowed
+the ramp then red in this app would mean both "very overdue" and "blocked", which is exactly the
+ambiguity the separation prevents.
 
 Work in flight is neutral, not amber: the tool chips in the chat drawer pulse `ink-faint` while
 running and settle to `accent` when done. Distinguishing two states by animation alone fails under
@@ -148,8 +148,8 @@ these is a way to make this app look like every other one:
 
 ## When you are adding something genuinely new
 
-F2 brings approval and block cards; F4 brings the usage page and a cost timeline. Neither exists
-yet, so you will be designing, not copying. Work outward from what is there:
+Sooner or later you will be designing rather than copying — the approval and block cards and the
+usage page all started that way. Work outward from what is there:
 
 1. **Find the nearest existing thing** and start from its structure. An approval card is closer to
    `InvoiceDetailPanel` (a header with a status, a body of facts, a decision at the end) than to

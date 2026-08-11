@@ -1,6 +1,6 @@
 # The app, screen by screen
 
-The running app against the seeded ledger — around 40 invoices, the three demo users, the real
+The running app uses the seeded ledger: around 40 invoices, the three demo users, the real
 policy file, `gpt-4o-mini` behind `/api/chat`. Nothing here is staged: the model picked its own
 tools, the figures came back from the API, the approval summaries are written by the server, and
 the refusals are the gate's own words.
@@ -53,9 +53,8 @@ resolved data, not by the model that proposed it.
 
 ![An approval card asking to confirm marking invoice 2026-0025 as paid, with Approve and Reject](screenshots/assistant-approval-required.png)
 
-Approving is not the last word either. Policy lets an Accountant confirm it; the API's own €1,000
-settlement ceiling still refuses it, and nothing changes. Two independent limits, and the outer one
-does not care that a human said yes.
+Approval does not bypass the API's €1,000 settlement ceiling. The API still refuses the action, so
+nothing changes.
 
 ![The approved action refused by the API, shown as a red resolved note in the transcript](screenshots/assistant-ceiling-refusal.png)
 
@@ -63,6 +62,13 @@ Under that ceiling the same flow goes through: approve, and the write executes u
 identity, against the same REST API a person would have used.
 
 ![Invoice 2026-0039 sent after approval, confirmed with the resulting customer and amount](screenshots/assistant-approved-write.png)
+
+Approving `send_invoice` is not the same as confirming delivery — the ledger change commits
+immediately, the email is a separate effect handed to an outbox, and the card keeps polling until
+that settles too. Left unresolved past the watch window, it does not just go quiet: "Check again"
+replays the same authorized approval under the same execution, never a second write.
+
+![An execution still unconfirmed after the watch window, with a Check again button](screenshots/assistant-outcome-unconfirmed.png)
 
 A Viewer's write never becomes a proposal at all. The policy denies it outright, the audit log
 records it, and the model is left to explain a decision it did not make and could not have avoided.

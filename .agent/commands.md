@@ -48,6 +48,19 @@ dotnet test --filter FullyQualifiedName~UsageAccountingTests    # metering and t
 dotnet test --filter FullyQualifiedName~DailyBudgetTests        # the spend kill switch
 ```
 
+The durability suites are the ones that take a moment, because they run real concurrent
+requests and stop the process at named fault checkpoints rather than sleeping:
+
+```bash
+dotnet test --filter FullyQualifiedName~DurableActionTests            # concurrent approve/reject
+dotnet test --filter FullyQualifiedName~TransactionalIdempotencyTests # crash boundaries and replay
+dotnet test --filter FullyQualifiedName~ApprovalPreconditionTests     # ETag / If-Match on approvals
+dotnet test --filter FullyQualifiedName~OutboxDeliveryTests           # the outbox and the reconciler
+```
+
+The outbox worker is a hosted service in the running app; the delivery tests drive the dispatcher
+and the reconciler directly so nothing depends on how fast the machine is.
+
 The scripted model reports fixed usage (120 prompt / 45 completion tokens) and the test host prices
 it at 10€/20€ per million, so one scripted model call costs exactly 0.0021€. Changing either number
 moves the cost assertions.

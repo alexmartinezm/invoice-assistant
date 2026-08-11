@@ -2,7 +2,7 @@ namespace Api.Domain;
 
 /// <summary>
 /// Ordered from least to most privileged so that rules can express "at least this role"
-/// with a simple comparison. The policy engine (F2) relies on this ordering.
+/// with a simple comparison. The policy engine relies on this ordering.
 /// </summary>
 public enum Role
 {

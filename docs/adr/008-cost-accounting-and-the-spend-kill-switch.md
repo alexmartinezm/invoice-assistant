@@ -4,14 +4,14 @@
 
 ## Context
 
-F4 has to answer two questions with the same data. *What did this conversation cost?* — the number
-the Usage page shows, and the reason anyone believes the "<1€/day" claim. And *may this call
-happen at all?* — the kill switch that makes a public demo safe to leave running with a real key in
+Cost accounting has to answer two questions with the same data: *What did this conversation cost?*
+That is the number the Usage page shows and the basis for the "<1€/day" claim. It must also answer
+*may this call happen at all?* The kill switch makes a public demo safe to leave running with a real key in
 it.
 
-The obvious shape is a service the orchestrator calls once per turn: start a timer, ask the model,
-record what came back. It does not survive contact with how a turn actually runs. A turn that uses
-tools is not one model call; `FunctionInvokingChatClient` owns a loop that calls the model, runs the
+One possible design is a service the orchestrator calls once per turn: start a timer, ask the model,
+and record what came back. That does not match the actual turn flow. A turn that uses tools is not one
+model call; `FunctionInvokingChatClient` owns a loop that calls the model, runs the
 tool, and calls the model again — up to `maxToolCallsPerTurn` times. `ChatOrchestrator` watches
 that loop stream past and never sees an individual call. Metering per turn would therefore price a
 five-call turn as one, and — worse — a budget checked once per turn would let a single long turn
@@ -33,7 +33,7 @@ entry is recorded at zero with a warning and its own metric (`assistant.unpriced
 rather than priced by a guessed default. A wrong number here is worse than a missing one: it would
 be spent silently, and the kill switch would be counting fiction.
 
-The consequence is stated plainly because it is a real hole: **spend on an unpriced model is
+**Spend on an unpriced model is
 invisible to the kill switch.** The metric exists so that hole is observable, and configuring a
 price closes it.
 

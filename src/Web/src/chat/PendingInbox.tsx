@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { PendingActionView } from '../api/types';
 import { ApprovalCard, type PendingApproval } from './ApprovalCard';
+import { useActionOutcome } from './useActionOutcome';
 
 /** How often the queue is re-read. Proposals lapse in five minutes, so this is frequent enough. */
 const refreshMs = 30_000;
@@ -28,6 +29,7 @@ export function PendingInbox({
 }) {
   const [waiting, setWaiting] = useState<PendingActionView[]>([]);
   const [resolved, setResolved] = useState<Record<string, PendingApproval['state']>>({});
+  const outcomes = useActionOutcome(token);
 
   const refresh = useCallback(async () => {
     try {
@@ -49,14 +51,10 @@ export function PendingInbox({
 
     try {
       const outcome = await api.resolveAction(token, actionId, decision);
-      setResolved((current) => ({
-        ...current,
-        [actionId]: {
-          status: 'resolved',
-          message: outcome.message,
-          failed: outcome.status === 'failed',
-        },
-      }));
+
+      outcomes.track(actionId, outcome, (state) =>
+        setResolved((current) => ({ ...current, [actionId]: state })),
+      );
     } catch (cause) {
       setResolved((current) => ({
         ...current,

@@ -1,5 +1,7 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Api.Domain;
+using Api.Infrastructure.Delivery;
 using Api.Features.Auth;
 using Api.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
@@ -17,12 +19,13 @@ public static class InvoiceEndpoints
         group.MapGet("/", ListAsync);
         group.MapGet("/{number}", GetAsync);
 
-        // Writes accept an Idempotency-Key so a retry — by the assistant, by the HTTP stack, or by a
-        // user clicking approve twice — returns the first answer instead of doing the work again.
+        // Writes require an Idempotency-Key, and the filter owns the transaction they run in: the
+        // business change and the receipt that lets a retry replay it commit together or not at all.
+        // Nothing in this group may call an external service — see TransactionalIdempotencyFilter.
         var writes = routes.MapGroup("/api/invoices")
             .WithTags("Invoices")
             .RequireAuthorization()
-            .AddEndpointFilter<IdempotencyFilter>();
+            .AddEndpointFilter<TransactionalIdempotencyFilter>();
 
         writes.MapPost("/", CreateDraftAsync).RequireAuthorization(Policies.Accountant);
         writes.MapPost("/{number}/send", SendAsync).RequireAuthorization(Policies.Accountant);
@@ -119,16 +122,18 @@ public static class InvoiceEndpoints
 
     private static async Task<IResult> GetAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken)
     {
         var invoice = await FindAsync(db, number, tracking: false, cancellationToken);
-        return invoice is null ? NotFound(number) : Results.Ok(invoice.ToDetail(clock.Today));
+        return invoice is null ? NotFound(number) : await DetailAsync(http, db, invoice, clock.Today, cancellationToken);
     }
 
     private static async Task<IResult> CreateDraftAsync(
         CreateInvoiceRequest request,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         IOptions<InvoicingOptions> options,
@@ -166,18 +171,133 @@ public static class InvoiceEndpoints
         await db.SaveChangesAsync(cancellationToken);
 
         var created = await FindAsync(db, invoice.Number, tracking: false, cancellationToken);
-        return Results.Created($"/api/invoices/{invoice.Number}", created!.ToDetail(clock.Today));
+        var location = $"/api/invoices/{invoice.Number}";
+
+        // Set directly on the response rather than left to Results.Created's own execution, which
+        // runs after the idempotency filter has already captured what it can replay — too late for
+        // a header set only there to be seen. See TransactionalIdempotencyFilter.CaptureReplayableHeaders.
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(created!.Revision);
+        http.Response.Headers.Location = location;
+
+        return Results.Created(location, created.ToDetail(clock.Today));
     }
 
-    private static Task<IResult> SendAsync(
+    /// <summary>
+    /// Moves the invoice out of draft and queues the delivery, in one transaction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Answers <c>202</c>, not <c>200</c>, and the difference is the honest part: the ledger change
+    /// is done, the email is not. Nothing here calls the provider — that would put somebody else's
+    /// network inside our transaction — so what commits is an <see cref="InvoiceDelivery"/> and the
+    /// outbox row that will carry it, alongside the status change and the idempotency receipt.
+    /// </para>
+    /// <para>
+    /// The response carries the delivery, so <c>Sent</c> never has to double as a claim that the
+    /// customer received anything.
+    /// </para>
+    /// </remarks>
+    private static async Task<IResult> SendAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
-        CancellationToken cancellationToken) =>
-        TransitionAsync(number, db, clock, cancellationToken, invoice => invoice.Send());
+        IOptions<InvoicingOptions> options,
+        CancellationToken cancellationToken)
+    {
+        var invoice = await FindAsync(db, number, tracking: true, cancellationToken);
+        if (invoice is null)
+        {
+            return NotFound(number);
+        }
+
+        if (InvoicePrecondition.Check(http.Request, invoice) is { } stale)
+        {
+            return stale;
+        }
+
+        invoice.Send();
+
+        var delivery = new InvoiceDelivery
+        {
+            InvoiceId = invoice.Id,
+            InvoiceNumber = invoice.Number,
+            ExecutionId = await ExecutionBehindAsync(http, db, cancellationToken),
+            ProviderKey = Guid.CreateVersion7().ToString(),
+            Recipient = invoice.Customer?.Email ?? string.Empty,
+            CreatedAt = clock.UtcNow,
+        };
+
+        var payload = new InvoiceDeliveryPayload(
+            invoice.Number,
+            delivery.Recipient,
+            invoice.Customer?.Name ?? string.Empty,
+            invoice.Total,
+            options.Value.Currency,
+            invoice.DueDate);
+
+        db.InvoiceDeliveries.Add(delivery);
+        db.OutboxMessages.Add(OutboxMessage.ForDelivery(
+            delivery, JsonSerializer.Serialize(payload, DeliveryJson), clock.UtcNow));
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var location = $"/api/invoices/{invoice.Number}";
+
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(invoice.Revision);
+        http.Response.Headers.Location = location;
+
+        return Results.Accepted(location, invoice.ToDetail(clock.Today, delivery));
+    }
+
+    /// <summary>
+    /// The assistant execution this request belongs to, if any. The idempotency key of an
+    /// assistant write <em>is</em> its execution id, so the delivery can be linked back without the
+    /// caller having to say so — and a key from curl or the SPA simply matches nothing.
+    /// </summary>
+    /// <remarks>
+    /// The match has to be more than "some execution has this id". The header is client-controlled,
+    /// and an execution id is visible to the person who proposed the action even when somebody else
+    /// approved it — so a bare id lookup let one user hand another user's execution an unrelated
+    /// delivery, and with it the closing line on somebody else's conversation. Requiring the caller
+    /// to own the execution, for the right tool, in a state that is actually waiting for this
+    /// request, closes that without needing the client to be trusted about anything.
+    /// <para>
+    /// It is still a match on a value the client sent, and the stronger version would carry the
+    /// execution identity in the internal call itself rather than inferring it from a header. That
+    /// is a change to how <c>SelfApiClient</c> presents itself and is deliberately not made here;
+    /// what the tightened match buys is that the worst a forged key can now do is fail to link.
+    /// </para>
+    /// </remarks>
+    private static async Task<Guid?> ExecutionBehindAsync(
+        HttpContext http,
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(http.Request.Headers["Idempotency-Key"].ToString(), out var candidate))
+        {
+            return null;
+        }
+
+        var userId = http.User.Id();
+
+        var matches = await db.ActionExecutions.AsNoTracking().AnyAsync(
+            execution => execution.Id == candidate
+                && execution.UserId == userId
+                && execution.ToolName == SendInvoiceTool
+                && execution.Status != ActionExecutionStatus.Succeeded
+                && execution.Status != ActionExecutionStatus.Failed,
+            cancellationToken);
+
+        return matches ? candidate : null;
+    }
+
+    /// <summary>The one tool whose execution can be waiting on a delivery from this endpoint.</summary>
+    private const string SendInvoiceTool = "send_invoice";
 
     private static async Task<IResult> MarkPaidAsync(
         string number,
+        HttpContext http,
         ClaimsPrincipal principal,
         AppDbContext db,
         IClock clock,
@@ -188,6 +308,11 @@ public static class InvoiceEndpoints
         if (invoice is null)
         {
             return NotFound(number);
+        }
+
+        if (InvoicePrecondition.Check(http.Request, invoice) is { } stale)
+        {
+            return stale;
         }
 
         var limit = options.Value.AccountantMarkPaidLimit;
@@ -203,23 +328,25 @@ public static class InvoiceEndpoints
 
         invoice.MarkPaid(clock.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
-        return Results.Ok(invoice.ToDetail(clock.Today));
+        return await DetailAsync(http, db, invoice, clock.Today, cancellationToken);
     }
 
     private static Task<IResult> CancelAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken) =>
-        TransitionAsync(number, db, clock, cancellationToken, invoice => invoice.Cancel());
+        TransitionAsync(number, http, db, clock, cancellationToken, invoice => invoice.Cancel());
 
     private static Task<IResult> UpdateDueDateAsync(
         string number,
         UpdateDueDateRequest request,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken) =>
-        TransitionAsync(number, db, clock, cancellationToken, invoice => invoice.ChangeDueDate(request.DueDate));
+        TransitionAsync(number, http, db, clock, cancellationToken, invoice => invoice.ChangeDueDate(request.DueDate));
 
     /// <summary>
     /// Load, apply the aggregate method, save. The transition rules themselves live in
@@ -227,6 +354,7 @@ public static class InvoiceEndpoints
     /// </summary>
     private static async Task<IResult> TransitionAsync(
         string number,
+        HttpContext http,
         AppDbContext db,
         IClock clock,
         CancellationToken cancellationToken,
@@ -238,10 +366,39 @@ public static class InvoiceEndpoints
             return NotFound(number);
         }
 
+        if (InvoicePrecondition.Check(http.Request, invoice) is { } stale)
+        {
+            return stale;
+        }
+
         transition(invoice);
         await db.SaveChangesAsync(cancellationToken);
-        return Results.Ok(invoice.ToDetail(clock.Today));
+        return await DetailAsync(http, db, invoice, clock.Today, cancellationToken);
     }
+
+    /// <summary>
+    /// An invoice, the ETag a later conditional write is checked against, and its delivery. All
+    /// three travel together so a caller never has to guess which revision the body it is holding
+    /// was, or read "Sent" as "the customer has it".
+    /// </summary>
+    private static async Task<IResult> DetailAsync(
+        HttpContext http,
+        AppDbContext db,
+        Invoice invoice,
+        DateOnly today,
+        CancellationToken cancellationToken)
+    {
+        var delivery = await db.InvoiceDeliveries.AsNoTracking()
+            .Where(d => d.InvoiceId == invoice.Id)
+            .OrderByDescending(d => d.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        http.Response.Headers.ETag = InvoicePrecondition.ETagFor(invoice.Revision);
+        return Results.Ok(invoice.ToDetail(today, delivery));
+    }
+
+    /// <summary>The payload the outbox carries. Web defaults, so it round-trips as the API writes it.</summary>
+    private static readonly JsonSerializerOptions DeliveryJson = new(JsonSerializerDefaults.Web);
 
     private static Task<Invoice?> FindAsync(AppDbContext db, string number, bool tracking, CancellationToken cancellationToken)
     {

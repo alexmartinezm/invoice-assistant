@@ -48,6 +48,14 @@ public class ApiFactory : WebApplicationFactory<Program>
 
     public ScriptedChatClient Model { get; } = new();
 
+    /// <summary>
+    /// This test's own database, for the handful of assertions that need a second connection —
+    /// holding a row lock the application then has to time out on, for one. Going through
+    /// <see cref="AppDbContext"/> for that would be holding the lock with the same connection the
+    /// request needs.
+    /// </summary>
+    public string ConnectionString => _testConnectionString;
+
     public IClock Clock { get; } = new FrozenClock();
 
     public LogCapture Logs { get; } = new();

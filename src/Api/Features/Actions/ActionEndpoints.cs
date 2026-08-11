@@ -9,12 +9,25 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Api.Features.Actions;
 
-/// <summary>What became of a proposal, and the line the conversation closes on.</summary>
+/// <summary>
+/// What became of a proposal, and the line the conversation closes on.
+/// </summary>
+/// <remarks>
+/// The decision and the execution are reported separately on purpose. "Approved" is a fact about a
+/// person; "succeeded" is a fact about the world, and the gap between them is where a crash, a
+/// refusal or an unconfirmed delivery lives. A single status would have to pick one of the two to
+/// lie about.
+/// </remarks>
+/// <param name="DecisionStatus">approved, rejected, expired — the authorization outcome.</param>
+/// <param name="ExecutionStatus">pending, executing, succeeded, failed, unknown — or null when nothing ran.</param>
 public sealed record ActionOutcome(
     Guid ActionId,
-    string Status,
+    Guid? ExecutionId,
+    string DecisionStatus,
+    string? ExecutionStatus,
     string Summary,
     string Message,
+    string? DeliveryStatus,
     JsonElement? Result);
 
 /// <summary>
@@ -29,6 +42,7 @@ public sealed record ActionOutcome(
 /// for.
 /// </param>
 /// <param name="RequiredRole">The role the tool needs, so a card can name who to escalate to.</param>
+/// <param name="Execution">The attempt this decision authorized, once there is one.</param>
 public sealed record PendingActionView(
     Guid ActionId,
     string Tool,
@@ -38,7 +52,8 @@ public sealed record PendingActionView(
     DateTimeOffset ExpiresAt,
     bool Mine,
     bool CanApprove,
-    string? RequiredRole);
+    string? RequiredRole,
+    ActionExecutionView? Execution);
 
 /// <summary>
 /// Approving or rejecting a write the assistant proposed.
@@ -51,9 +66,16 @@ public sealed record PendingActionView(
 /// the person agreed to a specific sentence, and that is what runs.
 /// </para>
 /// <para>
-/// The closing line is written here rather than by the model (ADR 007). The assistant is not asked
-/// to narrate what happened to somebody's money — the server knows, and a sentence the server wrote
-/// cannot be wrong about it.
+/// The resolution itself is a database compare-and-set, not an in-memory status check (ADR 009).
+/// Whoever wins is bound as the actor and gets the single execution identity; everyone else is shown
+/// the recorded outcome. A retry by the winner resumes or replays that same execution rather than
+/// deciding again — which is what makes this endpoint safe to click twice, or to lose the response
+/// from.
+/// </para>
+/// <para>
+/// The closing line is written here rather than by the model (ADR 007), and only once the execution
+/// settles. The assistant is not asked to narrate what happened to somebody's money — the server
+/// knows, and a sentence the server wrote cannot be wrong about it.
 /// </para>
 /// </remarks>
 public static class ActionEndpoints
@@ -100,13 +122,14 @@ public static class ActionEndpoints
             .Take(MaxOpen)
             .ToListAsync(cancellationToken);
 
-        return Results.Ok(open.Select(action => ToView(action, principal, now)).ToList());
+        return Results.Ok(open.Select(action => ToView(action, principal, now, execution: null)).ToList());
     }
 
     private static async Task<IResult> GetAsync(
         Guid id,
         ClaimsPrincipal principal,
         AppDbContext db,
+        ActionResolver resolver,
         IClock clock,
         CancellationToken cancellationToken)
     {
@@ -118,14 +141,19 @@ public static class ActionEndpoints
             return NotFound(id);
         }
 
-        return Results.Ok(ToView(action, principal, clock.UtcNow));
+        var execution = await resolver.ExecutionForAsync(id, cancellationToken);
+        return Results.Ok(ToView(action, principal, clock.UtcNow, execution));
     }
 
     /// <summary>
     /// Answers "what is this, and can you act on it?" in one place, so the list, the single fetch
     /// and the SSE event cannot come to different conclusions about the same row.
     /// </summary>
-    private static PendingActionView ToView(PendingAction action, ClaimsPrincipal principal, DateTimeOffset now)
+    private static PendingActionView ToView(
+        PendingAction action,
+        ClaimsPrincipal principal,
+        DateTimeOffset now,
+        ActionExecution? execution)
     {
         var tool = WriteToolPlans.Find(action.ToolName);
         var role = principal.Role();
@@ -139,7 +167,10 @@ public static class ActionEndpoints
             action.ExpiresAt,
             Mine: action.UserId == principal.Id(),
             CanApprove: action.IsOpen(now) && tool is not null && role >= tool.RequiredRole,
-            RequiredRole: tool?.RequiredRole.ToString());
+            RequiredRole: tool?.RequiredRole.ToString(),
+            Execution: execution is null
+                ? null
+                : ActionExecutionView.Of(execution, message: ActionNarrator.Describe(action.Summary, execution)));
     }
 
     private static async Task<IResult> ApproveAsync(
@@ -147,24 +178,19 @@ public static class ActionEndpoints
         ClaimsPrincipal principal,
         AppDbContext db,
         ToolGate gate,
+        ActionResolver resolver,
+        ActionExecutor executor,
         IClock clock,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger(typeof(ActionEndpoints));
         var approverId = principal.Id();
-        var now = clock.UtcNow;
 
-        var action = await db.PendingActions.SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
+        var action = await db.PendingActions.AsNoTracking().SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
         if (action is null || !MayResolve(principal, action))
         {
             return NotFound(id);
-        }
-
-        if (!action.IsOpen(now))
-        {
-            await db.SaveChangesAsync(cancellationToken);
-            return Closed(action, clock.UtcNow);
         }
 
         using var args = JsonDocument.Parse(action.ArgsJson);
@@ -185,22 +211,51 @@ public static class ActionEndpoints
             // a guess is exactly what the approval exists to prevent — and it says so rather than
             // surfacing as an unexplained 500.
             logger.LogError(exception, "Pending action {ActionId} for {Tool} cannot be replayed", action.Id, action.ToolName);
+            return NotReplayable(action);
+        }
 
-            return Results.Problem(
-                title: "Action cannot be executed",
-                detail: $"'{action.ToolName}' cannot be replayed by this build, so nothing was done. "
-                    + "Ask the assistant again to propose it afresh.",
-                statusCode: StatusCodes.Status409Conflict,
-                extensions: new Dictionary<string, object?> { ["code"] = "action_not_replayable" });
+        // Already decided by this caller: resume or replay, never decide again. This is the branch
+        // that makes a lost response harmless — the retry lands here and finds its own execution.
+        if (action.Status is PendingActionStatus.Approved)
+        {
+            var existing = await resolver.ExecutionForAsync(action.Id, cancellationToken);
+
+            if (existing is null || action.ResolvedByUserId != approverId)
+            {
+                // A different approver won, or the row was resolved outside the resolver. Neither is
+                // this caller's execution to continue under their own identity.
+                return Closed(action, clock.UtcNow);
+            }
+
+            return await ContinueAsync(action, existing, call, db, executor, clock, logger, cancellationToken);
+        }
+
+        if (!action.IsOpen(clock.UtcNow))
+        {
+            await resolver.MarkExpiredAsync(action.Id, cancellationToken);
+            return Closed(
+                await db.PendingActions.AsNoTracking().SingleOrDefaultAsync(a => a.Id == id, cancellationToken) ?? action,
+                clock.UtcNow);
         }
 
         var decision = await gate.AuthoriseApprovalAsync(tool, args.RootElement, principal.Role(), cancellationToken);
         if (decision.Action is PolicyAction.Deny)
         {
-            action.TryReject(approverId, now);
-            await gate.AuditAsync(
-                approverId, tool, args.RootElement, AuditDecision.Denied, decision.Reason, action.ConversationId, cancellationToken);
-            await db.SaveChangesAsync(cancellationToken);
+            var denied = await resolver.ResolveWithoutExecutingAsync(
+                action, approverId, PendingActionStatus.Rejected, ActionResolutionReason.PolicyDenied,
+                args.RootElement, AuditDecision.Denied, decision.Reason, cancellationToken);
+
+            if (!denied.Won)
+            {
+                // Somebody resolved it between the policy check and the write. The refusal is still
+                // a fact about this attempt and is recorded, but the row's outcome belongs to
+                // whoever won — answering 403 would attribute a resolution this click did not make.
+                await resolver.AuditAsync(
+                    approverId, tool.Name, args.RootElement, AuditDecision.Denied, decision.Reason,
+                    action.ConversationId, cancellationToken);
+
+                return Closed(denied.Action, clock.UtcNow);
+            }
 
             return Results.Problem(
                 title: "Not permitted",
@@ -209,72 +264,164 @@ public static class ActionEndpoints
                 extensions: new Dictionary<string, object?> { ["code"] = "policy_denied" });
         }
 
-        // Claimed before it runs, and saved immediately: two tabs clicking approve at once means one
-        // of them loses the race here rather than both reaching the API.
-        if (!action.TryApprove(approverId, now))
+        var claim = await resolver.ClaimForApprovalAsync(
+            action, args.RootElement, approverId, decision.Reason, cancellationToken);
+
+        if (!claim.Won)
         {
-            await db.SaveChangesAsync(cancellationToken);
-            return Closed(action, clock.UtcNow);
+            if (claim.Failure is ClaimFailure.NotFingerprinted)
+            {
+                return NotReplayable(claim.Action);
+            }
+
+            if (claim.Failure is ClaimFailure.Tampered)
+            {
+                return Tampered(claim.Action);
+            }
+
+            // Lost the race. If this caller is the one who won it a moment ago — two tabs, one
+            // person — continue their execution; otherwise report the recorded outcome.
+            return claim.Action.ResolvedByUserId == approverId && claim.Execution is { } mine
+                ? await ContinueAsync(claim.Action, mine, call, db, executor, clock, logger, cancellationToken)
+                : Closed(claim.Action, clock.UtcNow);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        return await ContinueAsync(claim.Action, claim.Execution!, call, db, executor, clock, logger, cancellationToken);
+    }
 
-        // The action's own id is the idempotency key, so replaying an approval — a retry, a double
-        // click that got past the claim — cannot perform the write twice.
-        var result = await gate.ExecuteAsync(call, action.Id.ToString(), cancellationToken);
-        var failed = result.ValueKind is JsonValueKind.Object && result.TryGetProperty("error", out _);
+    /// <summary>
+    /// Takes an authorized execution as far as it can go, and reports where that is.
+    /// </summary>
+    /// <remarks>
+    /// Three cases, and the distinction between them is the whole feature. A settled execution is
+    /// <em>replayed</em> from its stored result — no second call, no second closing line. One that
+    /// is in flight elsewhere is reported as-is rather than raced. Only a fresh or unconfirmed
+    /// execution actually attempts anything, and it does so under the same idempotency key it has
+    /// always had.
+    /// </remarks>
+    private static async Task<IResult> ContinueAsync(
+        PendingAction action,
+        ActionExecution execution,
+        ToolCall call,
+        AppDbContext db,
+        ActionExecutor executor,
+        IClock clock,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        // Settled, or genuinely in flight somewhere else: report it, do not race it.
+        //
+        // "Genuinely" is doing the work. An Executing row whose attempt lease has expired belongs to
+        // a request that is not coming back, and reporting it as in flight is what left executions
+        // — and the card watching them — stuck on "executing" for ever. That one falls through to
+        // the executor, which checks the receipt before it considers sending anything again.
+        if (execution.IsSettled || IsAttemptLive(execution, clock.UtcNow))
+        {
+            return await OutcomeAsync(
+                action, execution, ActionNarrator.Describe(action.Summary, execution),
+                StoredResult(execution), clock.UtcNow, db, cancellationToken);
+        }
 
-        await gate.AuditAsync(
-            approverId,
-            tool,
-            args.RootElement,
-            failed ? AuditDecision.Denied : AuditDecision.Confirmed,
-            failed ? $"Approved, then refused by the API: {result.GetRawText()}" : decision.Reason,
-            action.ConversationId,
-            cancellationToken);
+        var attempt = await executor.RunAsync(execution, call, action.ExpectedResourceRevision, cancellationToken);
+        var settled = attempt.Execution;
 
-        if (failed)
+        if (settled.Status is ActionExecutionStatus.Failed)
         {
             // The layered-defence case: a person said yes and the server still said no. Worth
             // logging loudly, because it is the interesting one.
-            logger.LogWarning("Approved action {ActionId} was refused by the API: {Result}", action.Id, result.GetRawText());
+            logger.LogWarning(
+                "Approved action {ActionId} was refused by the API: {Code}", action.Id, settled.ErrorCode);
         }
 
-        var message = failed
-            ? $"{action.Summary} — approved, but the API refused it. Nothing changed."
-            : $"Done: {action.Summary.ToLowerFirst()}.";
+        var message = ActionNarrator.Describe(action.Summary, settled);
 
-        await RecordClosingLineAsync(db, action, message, clock, cancellationToken);
+        // The transcript gets a line only once the outcome is known. An assistant message saying
+        // "Done" while an execution is still unconfirmed would be exactly the kind of claim this
+        // whole slice exists to stop making.
+        if (settled.IsSettled)
+        {
+            await RecordClosingLineAsync(db, action, message, clock, cancellationToken);
+        }
 
-        return Results.Ok(new ActionOutcome(
-            action.Id, failed ? "failed" : "approved", action.Summary, message, result));
+        return await OutcomeAsync(action, settled, message, attempt.Payload, clock.UtcNow, db, cancellationToken);
     }
+
+    /// <summary>
+    /// Whether some other request is still working on this execution.
+    /// </summary>
+    /// <remarks>
+    /// An execution waiting on a delivery is <c>Executing</c> with no attempt lease — the outbox
+    /// owns it, not an HTTP request — and must not be picked up here either, which is why a missing
+    /// lease counts as live for anything already past its first attempt.
+    /// </remarks>
+    private static bool IsAttemptLive(ActionExecution execution, DateTimeOffset now) =>
+        execution.Status is ActionExecutionStatus.Executing
+        && (execution.AttemptExpiresAt is null || execution.AttemptExpiresAt > now);
 
     private static async Task<IResult> RejectAsync(
         Guid id,
         ClaimsPrincipal principal,
         AppDbContext db,
+        ActionResolver resolver,
         IClock clock,
         CancellationToken cancellationToken)
     {
-        var now = clock.UtcNow;
-
-        var action = await db.PendingActions.SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
+        var action = await db.PendingActions.AsNoTracking().SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
         if (action is null || !MayResolve(principal, action))
         {
             return NotFound(id);
         }
 
-        if (!action.TryReject(principal.Id(), now))
+        using var args = JsonDocument.Parse(action.ArgsJson);
+
+        var claim = await resolver.ResolveWithoutExecutingAsync(
+            action, principal.Id(), PendingActionStatus.Rejected, ActionResolutionReason.UserRejected,
+            args.RootElement, AuditDecision.Rejected, "The user declined the proposed action.", cancellationToken);
+
+        if (!claim.Won)
         {
-            await db.SaveChangesAsync(cancellationToken);
-            return Closed(action, clock.UtcNow);
+            // The loser of an approve/reject race is shown what was decided, not given a second
+            // decision. Rejecting an action that already executed would be a lie on the card.
+            return Closed(claim.Action, clock.UtcNow);
         }
 
         var message = $"Cancelled: {action.Summary.ToLowerFirst()}. Nothing was changed.";
         await RecordClosingLineAsync(db, action, message, clock, cancellationToken);
 
-        return Results.Ok(new ActionOutcome(action.Id, "rejected", action.Summary, message, null));
+        return Results.Ok(new ActionOutcome(
+            action.Id, null, "rejected", null, action.Summary, message, null, null));
+    }
+
+    private static async Task<IResult> OutcomeAsync(
+        PendingAction action,
+        ActionExecution execution,
+        string message,
+        JsonElement? result,
+        DateTimeOffset now,
+        AppDbContext db,
+        CancellationToken cancellationToken) =>
+        Results.Json(
+            new ActionOutcome(
+                action.Id,
+                execution.Id,
+                Describe(action, now),
+                execution.Status.ToString().ToLowerInvariant(),
+                action.Summary,
+                message,
+                await ActionExecutionEndpoints.DeliveryStatusAsync(execution, db, cancellationToken),
+                result),
+            // 202 while the answer is still owed: a client that treats 200 as "finished" is right to.
+            statusCode: execution.IsSettled ? StatusCodes.Status200OK : StatusCodes.Status202Accepted);
+
+    private static JsonElement? StoredResult(ActionExecution execution)
+    {
+        if (execution.ResultJson is not { Length: > 0 } json)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 
     /// <summary>
@@ -297,9 +444,9 @@ public static class ActionEndpoints
                 Content = message,
                 CreatedAt = clock.UtcNow,
             });
-        }
 
-        await db.SaveChangesAsync(cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+        }
     }
 
     /// <summary>
@@ -321,6 +468,20 @@ public static class ActionEndpoints
             ["code"] = "action_not_open",
             ["status"] = Describe(action, now),
         });
+
+    private static IResult NotReplayable(PendingAction action) => Results.Problem(
+        title: "Action cannot be executed",
+        detail: $"'{action.ToolName}' cannot be replayed by this build, so nothing was done. "
+            + "Ask the assistant again to propose it afresh.",
+        statusCode: StatusCodes.Status409Conflict,
+        extensions: new Dictionary<string, object?> { ["code"] = "action_not_replayable" });
+
+    private static IResult Tampered(PendingAction action) => Results.Problem(
+        title: "Action cannot be executed",
+        detail: $"'{action.ToolName}' no longer matches the command that was proposed, so nothing was done. "
+            + "Ask the assistant again to propose it afresh.",
+        statusCode: StatusCodes.Status409Conflict,
+        extensions: new Dictionary<string, object?> { ["code"] = "action_tampered" });
 
     private static IResult NotFound(Guid id) => Results.Problem(
         title: "Action not found",

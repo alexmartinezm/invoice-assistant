@@ -144,7 +144,7 @@ public sealed partial class Placeholders(EvalHost host)
 
         using var client = await host.ClientForAsync("ana@demo");
 
-        var created = await client.PostAsJsonAsync("/api/invoices", new
+        var created = await client.WriteAsync("/api/invoices", new
         {
             customerName,
             lines = new[] { new { description = "Eval fixture — courier service", quantity = 1, unitPrice } },
@@ -156,12 +156,12 @@ public sealed partial class Placeholders(EvalHost host)
 
         if (send)
         {
-            (await client.PostAsync($"/api/invoices/{number}/send", content: null)).EnsureSuccessStatusCode();
+            (await client.WriteAsync($"/api/invoices/{number}/send")).EnsureSuccessStatusCode();
         }
 
         if (markPaid)
         {
-            (await client.PostAsync($"/api/invoices/{number}/mark-paid", content: null)).EnsureSuccessStatusCode();
+            (await client.WriteAsync($"/api/invoices/{number}/mark-paid")).EnsureSuccessStatusCode();
         }
 
         return number;
@@ -169,4 +169,24 @@ public sealed partial class Placeholders(EvalHost host)
 
     [GeneratedRegex(@"\{\{(\w+)\}\}")]
     private static partial Regex Pattern();
+}
+
+/// <summary>
+/// Fixture writes, carrying the <c>Idempotency-Key</c> every invoice write requires. One fresh key
+/// per call: these are setup steps, not retries.
+/// </summary>
+internal static class FixtureWrites
+{
+    public static async Task<HttpResponseMessage> WriteAsync(this HttpClient client, string url, object? body = null)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(body);
+        }
+
+        request.Headers.Add("Idempotency-Key", Guid.CreateVersion7().ToString());
+        return await client.SendAsync(request);
+    }
 }

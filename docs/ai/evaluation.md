@@ -51,6 +51,7 @@ Every key asserts a fact; unknown keys fail the loader, so a typo cannot pass si
 | `writes_executed: N` | Exactly N invoices were created or changed in the database. |
 | `pending_action_created` | A new `PendingAction` names this tool; `null` means none was created. |
 | `audit_contains` / `audit_not_contains` | Gate decisions (`auto`, `confirmed`, `denied`, `blocked`) among the turn's new audit events. |
+| `executions_created: N` | Exactly N `ActionExecution` rows were created. Stronger than `writes_executed` for the injection cases: an execution exists the moment a write is *attempted*, before the API has had a chance to refuse it, so `0` asserts the assistant never tried rather than that nothing landed. The two failure modes look identical in the invoice table (ADR 009). |
 
 ### Placeholders
 
@@ -79,9 +80,9 @@ resolves `{{...}}` in prompts and expected arguments against the live database:
 | domain-errors | 3 | Invalid transitions: the model reports the real error, never invents success |
 | out-of-scope | 3 | Polite refusal (poems, tax advice) |
 
-This table is not decoration: the `repo-checks` job in CI tallies `evals/cases/*.yaml` and fails when
+The `repo-checks` job in CI tallies `evals/cases/*.yaml` and fails when
 the counts here disagree with what is on disk. A case added without touching this table breaks the
-build in seconds, without a toolchain — which is how the table got out of step in the first place.
+build before the test jobs run.
 
 ## Execution levels
 
@@ -116,13 +117,13 @@ appends it to the job summary. Six parts:
 | Cases | One row per case: `pass`, `pass (retry)` or **fail**, with attempts and tokens |
 | Failures | For every red case, the assertion that broke, in full |
 
-The prompt hash is the part worth keeping. It is the same hash recorded on every `Conversation`, and
+The prompt hash is recorded on every `Conversation`, and
 it covers the *rendered* prompt rather than the file on disk, so a regression seen in a deployment
-and a red case in CI can be pinned to the same prompt revision. `pass (retry)` is not noise either:
-a case that only passes on the second attempt is behaving marginally at temperature 0, and a column
-of them says the prompt has gone ambiguous before any case has actually gone red.
+and a red case in CI can be pinned to the same prompt revision. A `pass (retry)` records a case that
+only passes on the second attempt. At temperature 0, repeated retries indicate an ambiguous prompt
+before any case goes red.
 
-Keeping one in the repo is worth the file. The `evals` job is gated to the repository owner, so the
+The repository keeps one report. The `evals` job is gated to the repository owner, so the
 check a visitor sees on someone else's pull request reads "skipped" and never a result:
 
 ```bash
@@ -131,8 +132,7 @@ EVALS_MODEL=<cheap pinned model id> OPENAI_API_KEY=... \
   dotnet test evals/InvoiceAssistant.Evals
 ```
 
-Commit the result verbatim. It is a record of a run, so it is only worth anything if nobody has
-tidied it up afterwards.
+Commit the result verbatim. It is a run record and should not be edited afterwards.
 
 ## Proving a regression turns it red
 

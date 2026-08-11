@@ -11,6 +11,7 @@ using Api.Features.Customers;
 using Api.Features.Invoices;
 using Api.Features.Reports;
 using Api.Infrastructure;
+using Api.Infrastructure.Delivery;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -86,6 +87,27 @@ builder.Services.AddRateLimiter(limiter =>
     });
 });
 
+// --- Durability -------------------------------------------------------------------------------
+// The seam tests use to stop the process at a named boundary. In a running deployment it is this
+// no-op and nothing else: it is not configurable, not a tool and not an endpoint.
+builder.Services.AddSingleton<IFaultInjector, NoFaults>();
+builder.Services.AddScoped<TransactionalIdempotencyFilter>();
+builder.Services.AddHostedService<IdempotencyCleanupService>();
+
+// Finishes executions whose caller never came back — from receipts and deliveries only, never by
+// re-running a write it has no identity for.
+builder.Services.AddScoped<ExecutionReconciler>();
+builder.Services.AddHostedService<ExecutionReconciler>(provider =>
+    ActivatorUtilities.CreateInstance<ExecutionReconciler>(provider));
+
+// The provider is a singleton because its receipts are its own: they stand in for state held on the
+// other side of the boundary, and putting them in our database would quietly make that boundary
+// transactional and the whole demonstration meaningless.
+builder.Services.AddSingleton<IInvoiceDeliveryProvider, DemoInvoiceDeliveryProvider>();
+builder.Services.AddScoped<OutboxDispatcher>();
+builder.Services.AddScoped<DeliveryReconciler>();
+builder.Services.AddHostedService<OutboxWorker>();
+
 // --- Cross-cutting ----------------------------------------------------------------------------
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<DomainExceptionHandler>();
@@ -96,6 +118,10 @@ var app = builder.Build();
 await app.MigrateAndSeedAsync();
 
 app.UseExceptionHandler();
+
+// Before routing, because an endpoint filter runs after model binding has already read the body,
+// and the idempotency fingerprint is computed from those bytes.
+app.UseIdempotencyBodyBuffering();
 
 // No CORS configuration anywhere: the Vite dev server proxies /api, and in production the API
 // serves the built SPA itself. The browser only ever talks to one origin.
@@ -112,6 +138,7 @@ app.MapConfigEndpoints()
     .MapReportEndpoints()
     .MapChatEndpoints()
     .MapActionEndpoints()
+    .MapActionExecutionEndpoints()
     .MapUsageEndpoints();
 
 // Production single-container layout: the built SPA lands in wwwroot and the API serves it.

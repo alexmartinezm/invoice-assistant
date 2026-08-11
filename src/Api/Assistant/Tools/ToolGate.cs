@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Domain;
@@ -25,6 +26,7 @@ namespace Api.Assistant.Tools;
 /// </remarks>
 public sealed class ToolGate(
     SelfApiClient api,
+    ActionExecutor executor,
     ToolPolicyEngine policy,
     TurnJournal journal,
     AppDbContext db,
@@ -90,18 +92,60 @@ public sealed class ToolGate(
             default:
                 activity?.SetTag("assistant.gate_decision", "allowed");
 
-                // A fresh key per attempt: it makes the call safe to retry inside the HTTP stack,
-                // which is what it is for. An approval replays under the pending action's own id.
-                var result = await ExecuteAsync(call, Guid.CreateVersion7().ToString(), cancellationToken);
-
-                if (tool.SideEffect is ToolSideEffect.Write)
-                {
-                    journal.CountWrite();
-                    await AuditAsync(userId, tool, args, AuditDecision.Auto, decision.Reason, journal.ConversationId, cancellationToken);
-                }
-
-                return result;
+                return tool.SideEffect is ToolSideEffect.Write
+                    ? await ExecuteAutoAsync(tool, userId, args, call, decision, activity, cancellationToken)
+                    : await api.GetJsonAsync(call.Url, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// A write policy allowed on its own. It still gets a durable execution identity, and the
+    /// identity is written down <em>before</em> the request goes out.
+    /// </summary>
+    /// <remarks>
+    /// The old code minted a throwaway idempotency key per attempt and audited after the fact. Both
+    /// were survivable right up until the process stopped mid-call, at which point there was no row
+    /// saying a write had been attempted and no key a retry could reuse. An auto-allowed write is
+    /// still somebody's invoice.
+    /// </remarks>
+    private async Task<JsonElement> ExecuteAutoAsync(
+        ToolIdentity tool,
+        Guid userId,
+        JsonElement args,
+        ToolCall call,
+        PolicyDecision decision,
+        Activity? activity,
+        CancellationToken cancellationToken)
+    {
+        var now = clock.UtcNow;
+        var argsJson = args.GetRawText();
+
+        var execution = new ActionExecution
+        {
+            UserId = userId,
+            ConversationId = journal.ConversationId,
+            ToolName = tool.Name,
+            Decision = ExecutionDecision.Auto,
+            CommandHash = Domain.CommandHash.Of(tool.Name, argsJson, expectedResourceRevision: null),
+            CreatedAt = now,
+        };
+
+        db.ActionExecutions.Add(execution);
+        db.AuditEvents.Add(NewAudit(userId, tool, args, AuditDecision.Auto, decision.Reason, journal.ConversationId, execution.Id, now));
+        await db.SaveChangesAsync(cancellationToken);
+
+        journal.CountWrite();
+        activity?.SetTag("assistant.execution_id", execution.Id);
+
+        AssistantTelemetry.ExecutionsStarted.Add(
+            1,
+            new KeyValuePair<string, object?>("tool", tool.Name),
+            new KeyValuePair<string, object?>("decision", nameof(ExecutionDecision.Auto)));
+
+        // No precondition on this path: policy allowed it here and now, so there is no window
+        // between the decision and the request for the invoice to have changed in.
+        var attempt = await executor.RunAsync(execution, call, ifMatch: null, cancellationToken);
+        return attempt.Payload;
     }
 
     /// <summary>
@@ -134,11 +178,6 @@ public sealed class ToolGate(
             : decision with { Action = PolicyAction.Allow };
     }
 
-    public Task<JsonElement> ExecuteAsync(ToolCall call, string idempotencyKey, CancellationToken cancellationToken) =>
-        call.Method == HttpMethod.Get
-            ? api.GetJsonAsync(call.Url, cancellationToken)
-            : api.SendJsonAsync(call.Method, call.Url, call.Body, idempotencyKey, cancellationToken);
-
     /// <summary>
     /// Records what the gate decided. Writes are always audited; an allowed read is not, so that
     /// <see cref="AuditDecision.Auto"/> keeps its one meaning — a change that happened without a
@@ -154,19 +193,30 @@ public sealed class ToolGate(
         Guid? conversationId,
         CancellationToken cancellationToken)
     {
-        db.AuditEvents.Add(new AuditEvent
+        db.AuditEvents.Add(NewAudit(userId, tool, args, decision, reason, conversationId, executionId: null, clock.UtcNow));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static AuditEvent NewAudit(
+        Guid userId,
+        ToolIdentity tool,
+        JsonElement args,
+        AuditDecision decision,
+        string reason,
+        Guid? conversationId,
+        Guid? executionId,
+        DateTimeOffset now) =>
+        new()
         {
-            Timestamp = clock.UtcNow,
+            Timestamp = now,
             UserId = userId,
             Action = "tool_call",
             ToolName = tool.Name,
             Decision = decision,
             ConversationId = conversationId,
+            ExecutionId = executionId,
             PayloadJson = JsonSerializer.Serialize(new { args, reason }, Json),
-        });
-
-        await db.SaveChangesAsync(cancellationToken);
-    }
+        };
 
     private async Task<JsonElement?> ExceedsLimitsAsync(
         ToolIdentity tool,
@@ -241,12 +291,23 @@ public sealed class ToolGate(
         CancellationToken cancellationToken)
     {
         var now = clock.UtcNow;
+        var argsJson = args.GetRawText();
+
+        // The state the person is about to agree to. Five minutes later the invoice may have been
+        // cancelled by somebody else, and the same arguments would then mean something the user
+        // never saw — so the approval carries the revision and the write fails closed on a change.
+        var revision = await TargetRevisionAsync(tool.Name, args, cancellationToken);
+
         var action = new PendingAction
         {
             UserId = userId,
             ConversationId = journal.ConversationId,
             ToolName = tool.Name,
-            ArgsJson = args.GetRawText(),
+            ArgsJson = argsJson,
+            ExpectedResourceRevision = revision,
+            // Hashed over the bytes that will be stored, not over the object they came from: the
+            // approval is a promise about what gets replayed, and replay reads these bytes back.
+            CommandHash = Domain.CommandHash.Of(tool.Name, argsJson, revision),
             Summary = await describe(cancellationToken),
             CreatedAt = now,
             ExpiresAt = now + ApprovalWindow,
@@ -286,6 +347,24 @@ public sealed class ToolGate(
                     : $"Nothing has changed yet. Say in one line that this needs an {tool.RequiredRole} to approve it, then stop.",
             },
             Json);
+    }
+
+    /// <summary>
+    /// The revision of the invoice a command targets, or null when it has no existing target or the
+    /// target does not exist. A missing invoice is not an error here: the approval simply carries no
+    /// precondition, and the API answers 404 when it runs.
+    /// </summary>
+    private async Task<long?> TargetRevisionAsync(string toolName, JsonElement args, CancellationToken cancellationToken)
+    {
+        if (WriteToolPlans.TargetNumber(toolName, args) is not { Length: > 0 } number)
+        {
+            return null;
+        }
+
+        return await db.Invoices.AsNoTracking()
+            .Where(invoice => invoice.Number == number)
+            .Select(invoice => (long?)invoice.Revision)
+            .SingleOrDefaultAsync(cancellationToken);
     }
 
     private static JsonElement Error(string error, string reason) =>
