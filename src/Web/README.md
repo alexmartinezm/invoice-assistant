@@ -19,10 +19,10 @@ Pages: **Login** (the three demo users, one click each), **Invoices** (aging str
 detail), **Usage** (spend against the daily cap, then every metered conversation) and a persistent
 **Chat** drawer carrying the approval and block cards.
 
-Two currencies live here on purpose. Invoices render in `Invoicing:Currency`, whatever the
+Two currencies are used here on purpose. Invoices render in `Invoicing:Currency`, whatever the
 deployment bills in; model spend renders in euros, because the kill switch is
 `Usage:DailyBudgetEur` and showing it converted would imply an exchange rate nobody applied. Usage
-figures also carry four decimals — a single model call costs fractions of a cent, and two decimals
+figures also carry four decimals. A single model call costs fractions of a cent, and two decimals
 would round every row to zero.
 
 ## Notes for whoever changes this

@@ -4,10 +4,9 @@
 
 ## Context
 
-The write gate is a good authorization boundary. It freezes the model's arguments, re-evaluates
-policy under the approver's identity, calls the business API with that identity and records the
-decision. What it has never had is an answer for the window *after* a decision and *before* the
-effect is known.
+The write gate freezes the model's arguments, re-evaluates policy under the approver's identity,
+calls the business API with that identity and records the decision. It does not record what happens
+between the decision and the external effect.
 
 Four concrete holes, all reachable in the shipped code:
 
@@ -28,7 +27,7 @@ audited `Denied`, which erases the human from the record of a decision they demo
 
 ## Decision
 
-**Three facts, recorded separately, linked by id, never collapsed into one status.**
+The design records three facts separately, links them by id, and never collapses them into one status.
 
 | Fact | Question it answers | Where it lives |
 |---|---|---|
@@ -36,7 +35,7 @@ audited `Denied`, which erases the human from the record of a decision they demo
 | Execution | What was attempted, and how did it end? | `ActionExecution` |
 | External effect | Did the provider take it? | `InvoiceDelivery`, driven by `OutboxMessage` |
 
-Ten rules follow, and are decided here rather than left implicit:
+The design follows ten rules:
 
 1. **Authorization is a database compare-and-set, not tracked-entity timing.** Approve, reject and
    expire are one conditional `UPDATE … WHERE status = 'Pending' AND expires_at > now`; the
@@ -60,7 +59,7 @@ Ten rules follow, and are decided here rather than left implicit:
    command — and it is **recomputed and compared at approval time**, not merely carried forward. A
    fingerprint nobody verifies records the tampering rather than preventing it.
 
-5. **`Unknown` is a state, and it is not `Failed`.** A request that crossed a non-transactional
+5. **`Unknown` records an unresolved external effect.** A request that crossed a non-transactional
    boundary without an answer is recorded as `Unknown`, reconciled from an authoritative receipt,
    and never blindly resent. `AuditDecision` stays an authorization vocabulary: an approved write
    the API refuses is `Confirmed` plus a failed execution. A human refusal is `Rejected`, which is a
@@ -128,10 +127,11 @@ Ten rules follow, and are decided here rather than left implicit:
     entry a failed save left tracked is detached before the next row in the same pass is touched,
     the same discipline every per-row save in this feature now shares.
 
-### What this is not
+### Scope
 
-Not a workflow engine, a saga framework or a reusable package. No distributed transaction across
-PostgreSQL and a provider. The outbox is **at-least-once dispatch**; the end-to-end property is
+This design covers one application, not a workflow engine, saga framework or reusable package. It does
+not implement a distributed transaction across PostgreSQL and a provider. The outbox is
+**at-least-once dispatch**; the end-to-end property is
 *effectively once*, and only when the provider honours a stable key or exposes receipt lookup. With
 neither capability an ambiguous result stays `Unknown` and waits for a person. No document in this
 repository may claim exactly-once delivery without naming the provider capability that makes it so.
@@ -147,9 +147,9 @@ deliberately asked for.
   with a different fingerprint is `422` — never a plausible-looking replay of the wrong result.
 - `POST /api/invoices/{number}/send` answers `202` with a delivery record. An invoice reading `Sent`
   no longer doubles as a claim that the customer received it, and the UI shows the two separately.
-- Approving no longer means "done". The approval card shows execution state — *executing*,
+- Approval does not mean "done". The approval card shows execution state — *executing*,
   *completed*, *failed*, *outcome unknown* — written by the server, with no extra model call to
-  narrate it (ADR 007's third point, unchanged and now load-bearing). The sentence travels **with**
+  narrate it (ADR 007's third point). The sentence travels **with**
   the execution, so a polling client renders the server's words rather than deriving copy from a
   status: `failed` on a refused delivery sits on an invoice that was issued, and only the server
   knows to say so.

@@ -15,7 +15,7 @@ export OPENAI_API_KEY=...        # or AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_K
 dotnet test evals/InvoiceAssistant.Evals
 ```
 
-PostgreSQL must be reachable (same `TEST_POSTGRES_CONNECTION_STRING` convention as the
+PostgreSQL must be reachable, using the same `TEST_POSTGRES_CONNECTION_STRING` convention as the
 integration tests). Without `EVALS_MODEL` and provider credentials every case is skipped with a
 warning — a plain `dotnet test` never spends money by accident, and a fork's PR never fails for
 lacking secrets.
@@ -24,9 +24,9 @@ Each run writes a markdown report (pass rate globally and per category) to `EVAL
 and stops with a failure if the run exceeds its token budget (`EVALS_RUN_TOKEN_BUDGET`, default
 250,000).
 
-The harness also tests itself: `HarnessSelfTests` runs the whole machinery against a scripted
-model on every plain `dotnet test`, credentials or not, so the first real run in CI is never the
-first run ever.
+`HarnessSelfTests` also runs the whole machinery against a scripted model on every plain
+`dotnet test`, with or without credentials. CI therefore exercises the evaluator even when it does
+not call a real model.
 
 ## Who can run the suite in CI
 

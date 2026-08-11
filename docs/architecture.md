@@ -2,7 +2,7 @@
 
 ## Vision
 
-invoice-assistant demonstrates an AI assistant embedded in an invoicing app with production-system guarantees. The LLM orchestrates (picks tools, writes responses); the server calculates, authorizes, persists and executes.
+invoice-assistant embeds an AI assistant in an invoicing app with server-enforced guarantees. The LLM orchestrates (picks tools, writes responses); the server calculates, authorizes, persists and executes.
 
 ## Domain
 
@@ -108,10 +108,10 @@ The customers come from `MarketFixtures`, which ships sets for `es-ES`, `en-US`,
 `de-DE` — each with the company forms, tax-identifier shape and email domains that market actually
 uses (`B12345678` for a Spanish NIF, `41-2039571` for a US EIN, `GB123456789` for a UK VAT number).
 An unrecognised market falls back rather than refusing to boot, preferring the same language first
-and logging what it chose: quietly serving Spanish customers to someone who configured Japan is the
-kind of thing that only surfaces mid-demo.
+and logging the choice. A deployment configured for Japan could serve Spanish customers without
+anyone noticing until a demo.
 
-Note the split between `Market` and `Locale`. The locale formats figures for whoever is reading;
+`Market` and `Locale` are separate. The locale formats figures for whoever is reading;
 the market decides whose ledger it is. A London controller reviewing a Spanish subsidiary is a real
 arrangement, so the two are allowed to differ and neither derives from the other.
 
@@ -134,13 +134,13 @@ variable names:
 | `ReducedVatRate` | `0.10` | The lower rate sprinkled through the seed |
 | `AccountantMarkPaidLimit` | `1000` | The endpoint's authorization check and the login screen's copy |
 
-The point is that there is exactly one source. `GET /api/config` hands the display settings to the
+`GET /api/config` is the single source for display settings. It hands them to the
 SPA before its first paint, and `SystemPromptProvider` renders the same values into the assistant's
 formatting instruction — so the chat and the table beside it cannot disagree about how a number
 looks. `InvoicingConfigurationTests` boots the whole app as a US deployment and checks that,
 including that the seeder stopped using constants of its own.
 
-One subtlety worth knowing: the prompt hash recorded on each conversation covers the *rendered*
+The prompt hash recorded on each conversation covers the *rendered*
 prompt, not the file on disk. Two deployments running the same `prompts/system.md` against different
 currencies were not given the same instruction, and the hash should say so.
 
@@ -163,7 +163,7 @@ Classic REST with role-based authZ on every endpoint (the assistant's write gate
 - `POST /api/chat` (SSE) · `GET /api/assistant/tools`
 - `GET /api/usage/summary?from=&to=` · `GET /api/usage/conversations` · `GET /api/usage/conversations/{id}`
 
-Query semantics worth stating once, because the tool descriptions depend on them: `status` accepts
+Tool query semantics are fixed: `status` accepts
 only the four persisted values, `overdue=true` selects invoices that were sent and are past due, and
 `from`/`to` bound the **due** date — which is what "what is overdue" and "what falls due this month"
 are actually asking about.
@@ -174,7 +174,8 @@ model verbatim, so these errors are written to be relayed as-is.
 
 - `POST /api/actions/{id}/approve` · `POST /api/actions/{id}/reject` · `GET /api/actions/{id}`
 - `GET /api/action-executions/{id}` — status, attempts, safe error and delivery state; visibility
-  follows the proposal's
+  follows the proposal's rules. Admins can see executions they could resolve, and other users can
+  see only executions for their own proposals or writes.
 
 **Every invoice write requires an `Idempotency-Key`**, and the key an assistant write
 sends is its execution's own id. The filter owns the transaction the handler runs in, so the
@@ -259,8 +260,8 @@ HTTP error. `blocked` is separate from `error` because nothing went wrong: the s
 
 ## Durability: what survives a crash, and what does not
 
-The write gate answers "may this happen?". Durable actions answer "did it?", which is a different
-question and needs different machinery (ADR 009).
+The write gate decides whether an action may happen. Durable actions record the execution and external
+effect, so they need different machinery (ADR 009).
 
 | Boundary | The guarantee | The limit |
 |---|---|---|
@@ -279,12 +280,12 @@ question and needs different machinery (ADR 009).
 | Outbox delivery | Committed work is retried until settled or classified | **At-least-once dispatch**, not exactly-once |
 | Provider effect | Effectively-once *when the provider honours a stable key or exposes receipt lookup* | With neither, an ambiguous result stays `Unknown` and is not retried |
 
-The last row is the one to read carefully. Nothing in this repository claims exactly-once delivery,
-and nothing may claim it without naming the provider capability that makes it so. `send_invoice`
+Nothing in this repository claims exactly-once delivery without naming the provider capability that
+makes it so. `send_invoice`
 gets it because the demo provider deduplicates on the stable key; a provider that did neither would
 leave deliveries `Unknown` for a person to resolve, which is the honest outcome rather than a gap.
 
-That last sentence is a tested claim rather than an intention: the demo provider's capabilities are
+The demo provider's capabilities are
 settable, its behaviour follows them, and the suite runs the ambiguous path against a provider that
 does neither. An ambiguous send is parked in its own outbox status, out of the dispatcher's reach,
 so nothing returns it to the queue through the passage of time alone.
@@ -293,7 +294,7 @@ The turn's own flow gains one step before anything is sent: **no assistant write
 decision and its execution identity are durably stored.** That includes a policy-allowed write, so
 "what did the assistant attempt today" is one query rather than an inference from audit rows.
 
-Six named fault checkpoints make all of this testable — after the approval claim, before and after
+Tests use six named fault checkpoints: after the approval claim, before and after
 the business commit, after the outbox claim, after the provider accepts, and after its receipt is in
 hand. In a running deployment the injector is a no-op that is not configurable, not a tool and not
 an endpoint; the tests replace it and throw. Races here are proved by stopping the process at a
@@ -302,17 +303,16 @@ named boundary, never by sleeping.
 ## Two ceilings, layered
 
 `policies.json` lets an Accountant settle invoices up to **100** without asking; the endpoint's own
-`Invoicing:AccountantMarkPaidLimit` is **1000**. That is not a contradiction, it is the whole
-argument of the repo in three rows:
+`Invoicing:AccountantMarkPaidLimit` is **1000**. The limits are enforced at separate layers:
 
 | Invoice total | What happens |
 |---|---|
 | ≤ 100 | Policy `allow` → executes, audited `auto` |
 | 100 – 1000 | Policy `require_confirmation` → `PendingAction`; audited `confirmed` on approval |
-| > 1000 | A human approves — and the **API still refuses** an Accountant (`amount_limit_exceeded`) |
+| > 1000 | A human approves, but the **API still refuses** an Accountant (`amount_limit_exceeded`) |
 
-The third row is the interesting one: the person said yes and the server said no anyway, because
-endpoint authorization was never delegated to the gate. There is a test per band in
+When the total exceeds 1000, endpoint authorization still refuses the action after approval. The gate
+does not replace endpoint authorization. There is a test per band in
 `tests/Api.Tests/WriteGateTests.cs`.
 
 Tool results are returned to the model as parsed JSON, not as a JSON string: a stringified result is
@@ -321,9 +321,8 @@ level deeper than the model expects.
 
 ## Tool catalog
 
-Every tool declares: `name`, `description`, args JSON schema, `sideEffect: read|write`,
-`requiredRole`, `riskLevel`. All of it, in catalog order, because the length of this table is the
-argument:
+Every tool declares `name`, `description`, an args JSON schema, `sideEffect: read|write`,
+`requiredRole`, and `riskLevel`. The catalog lists this metadata in order:
 
 | Tool | Side effect | Required role | Risk |
 |---|---|---|---|
@@ -338,9 +337,9 @@ argument:
 | `update_due_date` | write | Accountant | medium |
 
 Reads execute because `defaults.read` is `allow`, and `get_receivables_summary` computes the aging in
-the API, never in the model. They still pass through the gate, which is what makes `defaults.read` a
-real setting rather than decoration — a deployment can require confirmation for reads, or deny them
-for a role, without a code change. Writes require confirmation unless an explicit rule applies.
+the API, never in the model. They still pass through the gate, so a deployment can require
+confirmation for reads or deny them for a role without a code change. Writes require confirmation
+unless an explicit rule applies.
 
 `requiredRole` is the floor the policy engine matches on, not the whole story: an Accountant clears
 `mark_invoice_paid` and is still refused by the endpoint above the settlement ceiling.
